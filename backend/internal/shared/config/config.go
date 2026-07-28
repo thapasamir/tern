@@ -14,8 +14,11 @@ type Config struct {
 	LogLevel        string
 	DatabaseURL     string
 	RedisURL        string
+	AdminToken      string
 	ShutdownTimeout time.Duration
 }
+
+const minAdminTokenLen = 16
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
 
@@ -27,6 +30,7 @@ func Load() (Config, error) {
 		LogLevel:    get("LOG_LEVEL", "info"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		RedisURL:    os.Getenv("REDIS_URL"),
+		AdminToken:  os.Getenv("ADMIN_TOKEN"),
 	}
 
 	var err error
@@ -42,8 +46,14 @@ func Load() (Config, error) {
 	if cfg.RedisURL == "" {
 		missing = append(missing, "REDIS_URL")
 	}
+	if cfg.AdminToken == "" {
+		missing = append(missing, "ADMIN_TOKEN")
+	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("config: missing required env vars: %s", strings.Join(missing, ", "))
+	}
+	if len(cfg.AdminToken) < minAdminTokenLen {
+		return Config{}, fmt.Errorf("config: ADMIN_TOKEN must be at least %d characters", minAdminTokenLen)
 	}
 	return cfg, nil
 }

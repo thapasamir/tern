@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/samirthapa/webhook-platform/internal/features/tenant"
 	"github.com/samirthapa/webhook-platform/internal/shared/cache"
 	"github.com/samirthapa/webhook-platform/internal/shared/config"
 	"github.com/samirthapa/webhook-platform/internal/shared/database"
@@ -59,6 +60,19 @@ func run() error {
 		"postgres": func(ctx context.Context) error { return pool.Ping(ctx) },
 		"redis":    func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
 	}))
+
+	// Feature modules. Each exposes RegisterRoutes; main only mounts them.
+	tenantMod := tenant.NewModule(pool, cfg.AdminToken)
+
+	r.Route("/admin", func(r chi.Router) {
+		r.Use(tenantMod.RequireAdmin)
+		tenantMod.RegisterAdminRoutes(r)
+	})
+	// Every future feature (endpoints, events, deliveries) registers inside this group.
+	r.Route("/v1", func(r chi.Router) {
+		r.Use(tenantMod.Authenticate)
+		tenantMod.RegisterRoutes(r)
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
