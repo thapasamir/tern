@@ -2,8 +2,19 @@ include .env
 export
 
 GOOSE = go run github.com/pressly/goose/v3/cmd/goose@v3.24.1
+# sqlc runs from its official Docker image: pinned version, no local C toolchain needed
+# (building it from source fails on recent macOS SDKs).
+SQLC  = docker run --rm -v "$(CURDIR):/src" -w /src sqlc/sqlc:1.28.0
 
-.PHONY: up down run worker build test vet migrate-up migrate-down migrate-status migrate-new
+.PHONY: up down run worker build test vet sqlc sqlc-check migrate-up migrate-down migrate-status migrate-new
+
+# Regenerate type-safe Go code from migrations/ and each feature's queries.sql.
+sqlc:
+	$(SQLC) generate
+
+# Fails if generated code is stale, for CI: run `make sqlc-check`.
+sqlc-check:
+	$(SQLC) diff
 
 up:
 	docker compose -f ../docker-compose.yml up -d --wait

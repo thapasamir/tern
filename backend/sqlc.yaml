@@ -1,0 +1,31 @@
+version: "2"
+
+# One entry per feature: each feature owns its queries.sql and gets its own generated package.
+# The schema is read straight from the goose migrations, so there is a single source of truth.
+# Type overrides are defined once (see the anchor) and shared by every feature.
+sql:
+  - engine: postgresql
+    schema: migrations
+    queries: internal/features/tenant/queries.sql
+    gen:
+      go:
+        package: tenantdb
+        out: internal/features/tenant/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        overrides: &overrides
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          - db_type: text
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
