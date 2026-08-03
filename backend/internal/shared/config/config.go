@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,10 @@ type Config struct {
 	RedisURL        string
 	AdminToken      string
 	ShutdownTimeout time.Duration
+
+	// AllowLocalEndpoints lets customers register http:// and private/loopback webhook URLs.
+	// Development only: it disables SSRF protection, so production refuses to start with it on.
+	AllowLocalEndpoints bool
 }
 
 const minAdminTokenLen = 16
@@ -37,6 +42,14 @@ func Load() (Config, error) {
 	cfg.ShutdownTimeout, err = time.ParseDuration(get("SHUTDOWN_TIMEOUT", "15s"))
 	if err != nil {
 		return Config{}, fmt.Errorf("config: invalid SHUTDOWN_TIMEOUT: %w", err)
+	}
+
+	cfg.AllowLocalEndpoints, err = strconv.ParseBool(get("ALLOW_LOCAL_ENDPOINTS", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("config: invalid ALLOW_LOCAL_ENDPOINTS: %w", err)
+	}
+	if cfg.IsProduction() && cfg.AllowLocalEndpoints {
+		return Config{}, fmt.Errorf("config: ALLOW_LOCAL_ENDPOINTS must not be enabled in production")
 	}
 
 	var missing []string

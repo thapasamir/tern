@@ -29,3 +29,16 @@ sql:
             go_type:
               type: string
               pointer: true
+
+  - engine: postgresql
+    schema: migrations
+    queries: internal/features/endpoint/queries.sql
+    gen:
+      go:
+        package: endpointdb
+        out: internal/features/endpoint/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        rename:
+          url: URL
+        overrides: *overrides

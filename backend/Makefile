@@ -6,7 +6,7 @@ GOOSE = go run github.com/pressly/goose/v3/cmd/goose@v3.24.1
 # (building it from source fails on recent macOS SDKs).
 SQLC  = docker run --rm -v "$(CURDIR):/src" -w /src sqlc/sqlc:1.28.0
 
-.PHONY: up down run worker build test vet sqlc sqlc-check migrate-up migrate-down migrate-status migrate-new
+.PHONY: up down run worker build test vet smoke sqlc sqlc-check migrate-up migrate-down migrate-status migrate-new
 
 # Regenerate type-safe Go code from migrations/ and each feature's queries.sql.
 sqlc:
@@ -50,3 +50,7 @@ migrate-status:
 # usage: make migrate-new name=create_tenants
 migrate-new:
 	$(GOOSE) -dir migrations create $(name) sql
+
+# End-to-end HTTP checks against real Postgres and Redis (needs: make up migrate-up).
+smoke:
+	./scripts/smoke.sh

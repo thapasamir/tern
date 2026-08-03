@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/webhook-platform/internal/shared/ids"
 )
 
 const (
@@ -47,7 +48,7 @@ func (s *Service) CreateTenant(ctx context.Context, name string) (Tenant, Create
 		return Tenant{}, CreatedKey{}, err
 	}
 	now := s.now().UTC()
-	t := Tenant{ID: newID(), Name: name, CreatedAt: now}
+	t := Tenant{ID: ids.New(), Name: name, CreatedAt: now}
 
 	k, plain, hash, err := s.newKey(t.ID, "default", now)
 	if err != nil {
@@ -138,7 +139,7 @@ func (s *Service) newKey(tenantID uuid.UUID, name string, now time.Time) (APIKey
 	}
 	plain := keyPrefix + base64.RawURLEncoding.EncodeToString(secret)
 	k := APIKey{
-		ID:        newID(),
+		ID:        ids.New(),
 		TenantID:  tenantID,
 		Name:      name,
 		Prefix:    plain[:len(keyPrefix)+displayPrefixN],
@@ -151,14 +152,6 @@ func (s *Service) newKey(tenantID uuid.UUID, name string, now time.Time) (APIKey
 func hashKey(key string) []byte {
 	sum := sha256.Sum256([]byte(key))
 	return sum[:]
-}
-
-func newID() uuid.UUID {
-	id, err := uuid.NewV7()
-	if err != nil { // only fails if the system RNG fails
-		panic(fmt.Sprintf("tenant: generate uuid: %v", err))
-	}
-	return id
 }
 
 func validateName(name string) (string, error) {

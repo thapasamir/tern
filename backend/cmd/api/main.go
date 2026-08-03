@@ -13,12 +13,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/samirthapa/webhook-platform/internal/features/endpoint"
 	"github.com/samirthapa/webhook-platform/internal/features/tenant"
 	"github.com/samirthapa/webhook-platform/internal/shared/cache"
 	"github.com/samirthapa/webhook-platform/internal/shared/config"
 	"github.com/samirthapa/webhook-platform/internal/shared/database"
 	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
 	"github.com/samirthapa/webhook-platform/internal/shared/logger"
+	"github.com/samirthapa/webhook-platform/internal/shared/urlguard"
 )
 
 func main() {
@@ -63,6 +65,10 @@ func run() error {
 
 	// Feature modules. Each exposes RegisterRoutes; main only mounts them.
 	tenantMod := tenant.NewModule(pool, cfg.AdminToken)
+	endpointMod := endpoint.NewModule(pool, urlguard.NewValidator(cfg.AllowLocalEndpoints))
+	if cfg.AllowLocalEndpoints {
+		log.Warn("ALLOW_LOCAL_ENDPOINTS is on: SSRF protection is relaxed (development only)")
+	}
 
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(tenantMod.RequireAdmin)
@@ -72,6 +78,7 @@ func run() error {
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(tenantMod.Authenticate)
 		tenantMod.RegisterRoutes(r)
+		endpointMod.RegisterRoutes(r)
 	})
 
 	srv := &http.Server{
