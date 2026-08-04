@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -12,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/webhook-platform/internal/shared/eventtype"
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
 	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
 	"github.com/samirthapa/webhook-platform/internal/shared/signing"
@@ -20,11 +20,7 @@ import (
 const (
 	maxDescriptionLen = 500
 	maxEventTypes     = 50
-	maxEventTypeLen   = 128
 )
-
-// eventTypePattern accepts dotted lowercase names such as "invoice.paid" or "user.created".
-var eventTypePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
 
 // URLValidator decides whether a webhook URL is acceptable.
 // Its error messages must be safe to show to API clients.
@@ -214,9 +210,8 @@ func normalizeEventTypes(in []string) ([]string, error) {
 	out := make([]string, 0, len(in))
 	for _, t := range in {
 		t = strings.TrimSpace(t)
-		if len(t) > maxEventTypeLen || !eventTypePattern.MatchString(t) {
-			return nil, apperror.Invalid(fmt.Sprintf(
-				"invalid event type %q: use lowercase letters, digits and . _ - (for example \"invoice.paid\")", t))
+		if !eventtype.Valid(t) {
+			return nil, apperror.Invalid(fmt.Sprintf("invalid event type %q: %s", t, eventtype.Hint))
 		}
 		if _, dup := seen[t]; dup {
 			continue

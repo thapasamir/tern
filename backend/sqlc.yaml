@@ -29,6 +29,11 @@ sql:
             go_type:
               type: string
               pointer: true
+          - db_type: pg_catalog.int4
+            nullable: true
+            go_type:
+              type: int32
+              pointer: true
 
   - engine: postgresql
     schema: migrations
@@ -41,4 +46,31 @@ sql:
         emit_empty_slices: true
         rename:
           url: URL
+        overrides: *overrides
+
+  - engine: postgresql
+    schema: migrations
+    queries: internal/features/event/queries.sql
+    gen:
+      go:
+        package: eventdb
+        out: internal/features/event/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        rename:
+          url: URL
+        overrides: *overrides
+
+  - engine: postgresql
+    schema: migrations
+    queries: internal/features/delivery/queries.sql
+    gen:
+      go:
+        package: deliverydb
+        out: internal/features/delivery/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        rename:
+          url: URL
+          endpoint_url: EndpointURL
         overrides: *overrides

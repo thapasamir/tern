@@ -16,50 +16,16 @@ export ALLOW_LOCAL_ENDPOINTS=false # exercise the production URL policy
 export HTTP_ADDR=":18080"          # avoid clashing with a dev server on :8080
 
 BASE="http://localhost${HTTP_ADDR}"
-JSON='Content-Type: application/json'
-PASS=0
-FAIL=0
-CODE=""
-BODY=""
+# shellcheck source=scripts/lib.sh
+source scripts/lib.sh
 
 go build -o bin/api ./cmd/api
 ./bin/api >/dev/null 2>&1 &
 API_PID=$!
-trap 'kill "$API_PID" 2>/dev/null || true' EXIT
+trap 'kill "$API_PID" 2>/dev/null || true; rm -f "$HDR_FILE"' EXIT
 
-for _ in $(seq 1 50); do
-  curl -sf "$BASE/healthz" >/dev/null 2>&1 && break
-  sleep 0.2
-done
-curl -sf "$BASE/healthz" >/dev/null || { echo "API did not start"; exit 1; }
+wait_for_http "$BASE/healthz" || { echo "API did not start"; exit 1; }
 
-# call METHOD PATH TOKEN [JSON_BODY]  -> sets CODE and BODY
-call() {
-  local method=$1 path=$2 token=$3 data=${4:-}
-  local args=(-s -X "$method" -w $'\n%{http_code}' "$BASE$path")
-  [[ -n $token ]] && args+=(-H "Authorization: Bearer $token")
-  [[ -n $data ]] && args+=(-H "$JSON" -d "$data")
-  local out
-  out=$(curl "${args[@]}")
-  CODE=${out##*$'\n'}
-  BODY=${out%$'\n'*}
-}
-
-# field PYTHON_EXPR  -> evaluates the expression against the last response body as `d`
-field() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)" <<<"$BODY"; }
-
-# absent PATTERN -> prints how many times the pattern occurs in the last response body
-absent() { grep -c "$1" <<<"$BODY" || true; }
-
-expect() { # expect DESCRIPTION WANT GOT
-  if [[ "$2" == "$3" ]]; then
-    PASS=$((PASS + 1))
-    echo "ok   $1"
-  else
-    FAIL=$((FAIL + 1))
-    echo "FAIL $1 (want '$2', got '$3')"
-  fi
-}
 
 echo "== tenants and API keys"
 call POST /admin/tenants "" '{"name":"Acme"}'
@@ -88,7 +54,7 @@ KEY2=$(field 'd["key"]')
 call GET /v1/api-keys "$KEY"
 expect "list keys" 200 "$CODE"
 expect "two keys listed" 2 "$(field 'len(d["data"])')"
-expect "listing never contains plaintext keys" 0 "$(absent '"key"')"
+expect "listing never contains plaintext keys" 0 "$(count '"key"')"
 call DELETE "/v1/api-keys/$KEY_ID" "$OTHER_KEY"
 expect "cannot revoke another tenant's key" 404 "$CODE"
 call DELETE "/v1/api-keys/$KEY_ID" "$KEY2"
@@ -130,7 +96,7 @@ reject "unknown field rejected" '{"url":"https://example.com","nope":1}'
 echo "== endpoints: read"
 call GET "/v1/endpoints/$EP" "$KEY"
 expect "get endpoint" 200 "$CODE"
-expect "get never returns the secret" 0 "$(absent '"secret"')"
+expect "get never returns the secret" 0 "$(count '"secret"')"
 call GET "/v1/endpoints/not-a-uuid" "$KEY"
 expect "bad id" 400 "$CODE"
 call GET "/v1/endpoints/$EP" "$OTHER_KEY"
@@ -143,7 +109,7 @@ call GET "/v1/endpoints?limit=2" "$KEY"
 expect "first page" 200 "$CODE"
 expect "page has 2 items" 2 "$(field 'len(d["data"])')"
 expect "next cursor present" True "$(field 'd["next_cursor"] is not None')"
-expect "list never returns secrets" 0 "$(absent '"secret"')"
+expect "list never returns secrets" 0 "$(count '"secret"')"
 CURSOR=$(field 'd["next_cursor"]')
 call GET "/v1/endpoints?limit=2&cursor=$CURSOR" "$KEY"
 expect "second page has the remaining item" 1 "$(field 'len(d["data"])')"
@@ -196,6 +162,4 @@ expect "gone after delete" 404 "$CODE"
 call DELETE "/v1/endpoints/$EP" "$KEY"
 expect "second delete" 404 "$CODE"
 
-echo
-echo "$PASS passed, $FAIL failed"
-[[ $FAIL -eq 0 ]]
+finish

@@ -21,6 +21,30 @@ type ApiKey struct {
 	RevokedAt  *time.Time
 }
 
+type Delivery struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	EventID      uuid.UUID
+	EndpointID   uuid.UUID
+	Status       string
+	AttemptCount int32
+	EnqueuedAt   *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	CompletedAt  *time.Time
+}
+
+type DeliveryAttempt struct {
+	ID            uuid.UUID
+	DeliveryID    uuid.UUID
+	AttemptNumber int32
+	StatusCode    *int32
+	Error         *string
+	ResponseBody  *string
+	DurationMs    int32
+	StartedAt     time.Time
+}
+
 type Endpoint struct {
 	ID             uuid.UUID
 	TenantID       uuid.UUID
@@ -33,6 +57,15 @@ type Endpoint struct {
 	DisabledAt     *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type Event struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	Type           string
+	Payload        []byte
+	IdempotencyKey *string
+	CreatedAt      time.Time
 }
 
 type Tenant struct {
