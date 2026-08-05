@@ -2,8 +2,6 @@ package delivery
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -123,6 +121,3 @@ func (f *fakeSender) Send(_ context.Context, req SendRequest) SendResult {
 	f.requests = append(f.requests, req)
 	return f.result
 }
-
-// quietLogger keeps expected warnings out of the test output.
-func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

@@ -54,6 +54,10 @@ func (e *Error) HTTPStatus() int {
 	}
 }
 
+// ErrNotFound is what a repository returns when no row matches. Services turn it into a
+// NotFound application error with FromStore.
+var ErrNotFound = errors.New("not found")
+
 func New(code Code, msg string) *Error { return &Error{Code: code, Message: msg} }
 
 func Invalid(msg string) *Error      { return New(CodeInvalid, msg) }
@@ -72,6 +76,16 @@ func From(err error) *Error {
 	var ae *Error
 	if errors.As(err, &ae) {
 		return ae
+	}
+	return Internal(err)
+}
+
+// FromStore converts a non-nil error returned by a repository into an application error:
+// ErrNotFound becomes a NotFound error carrying notFoundMsg, anything else an Internal error
+// whose cause is logged but never sent to clients.
+func FromStore(err error, notFoundMsg string) *Error {
+	if errors.Is(err, ErrNotFound) {
+		return NotFound(notFoundMsg)
 	}
 	return Internal(err)
 }

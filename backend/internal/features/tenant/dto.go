@@ -1,6 +1,10 @@
 package tenant
 
-import "time"
+import (
+	"time"
+
+	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+)
 
 type createTenantRequest struct {
 	Name string `json:"name"`
@@ -50,16 +54,7 @@ func toAPIKeyResponse(k APIKey) apiKeyResponse {
 		Name:       k.Name,
 		Prefix:     k.Prefix,
 		CreatedAt:  k.CreatedAt.UTC(),
-		LastUsedAt: utcPtr(k.LastUsedAt),
-		RevokedAt:  utcPtr(k.RevokedAt),
+		LastUsedAt: httpx.UTCPtr(k.LastUsedAt),
+		RevokedAt:  httpx.UTCPtr(k.RevokedAt),
 	}
-}
-
-// utcPtr keeps API timestamps in one timezone regardless of what the database driver returns.
-func utcPtr(t *time.Time) *time.Time {
-	if t == nil {
-		return nil
-	}
-	u := t.UTC()
-	return &u
 }

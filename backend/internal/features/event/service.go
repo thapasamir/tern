@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -159,9 +158,4 @@ func validateIdempotencyKey(k string) (*string, error) {
 	return &k, nil
 }
 
-func mapRepoError(err error) error {
-	if errors.Is(err, ErrNotFound) {
-		return apperror.NotFound("event not found")
-	}
-	return apperror.Internal(err)
-}
+func mapRepoError(err error) error { return apperror.FromStore(err, "event not found") }

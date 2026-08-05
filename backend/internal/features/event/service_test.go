@@ -11,6 +11,7 @@ import (
 
 	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
+	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
 )
 
 // fakeRepo is an in-memory Repository. fanOut is how many deliveries each new event produces.
@@ -76,16 +77,6 @@ func newService(fanOut int) (*Service, *fakeRepo, *fakeEnqueuer) {
 	return NewService(repo, enq), repo, enq
 }
 
-func wantCode(t *testing.T, err error, code apperror.Code) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected %s error, got nil", code)
-	}
-	if got := apperror.From(err).Code; got != code {
-		t.Fatalf("error code = %s, want %s (err: %v)", got, code, err)
-	}
-}
-
 func input(payload string) IngestInput {
 	return IngestInput{Type: "invoice.paid", Payload: json.RawMessage(payload)}
 }
@@ -139,7 +130,7 @@ func TestIngest_StorageFailureIsAnInternalError(t *testing.T) {
 	repo.err = errors.New("boom: connection refused")
 
 	_, err := svc.Ingest(context.Background(), uuid.New(), input(`{}`))
-	wantCode(t, err, apperror.CodeInternal)
+	testutil.WantCode(t, err, apperror.CodeInternal)
 	if strings.Contains(apperror.From(err).Message, "boom") {
 		t.Fatal("internal cause leaked into the client-facing message")
 	}
@@ -205,7 +196,7 @@ func TestIngest_Validation(t *testing.T) {
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := svc.Ingest(context.Background(), uuid.New(), in)
-			wantCode(t, err, apperror.CodeInvalid)
+			testutil.WantCode(t, err, apperror.CodeInvalid)
 		})
 	}
 	if len(repo.events) != 0 || len(enq.calls) != 0 {
@@ -222,7 +213,7 @@ func TestGet_IsTenantScoped(t *testing.T) {
 		t.Fatalf("owner cannot read own event: %v", err)
 	}
 	_, err := svc.Get(context.Background(), uuid.New(), res.Event.ID)
-	wantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
 }
 
 func TestValidateIdempotencyKey_EmptyMeansNone(t *testing.T) {

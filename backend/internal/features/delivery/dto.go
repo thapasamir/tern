@@ -1,6 +1,10 @@
 package delivery
 
-import "time"
+import (
+	"time"
+
+	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+)
 
 type deliveryResponse struct {
 	ID           string     `json:"id"`
@@ -34,7 +38,7 @@ func toResponse(d Delivery) deliveryResponse {
 		Status:       d.Status,
 		AttemptCount: d.AttemptCount,
 		CreatedAt:    d.CreatedAt.UTC(),
-		CompletedAt:  utcPtr(d.CompletedAt),
+		CompletedAt:  httpx.UTCPtr(d.CompletedAt),
 	}
 }
 
@@ -51,13 +55,4 @@ func toDetailResponse(d Delivery, attempts []Attempt) deliveryDetailResponse {
 		})
 	}
 	return deliveryDetailResponse{deliveryResponse: toResponse(d), Attempts: out}
-}
-
-// utcPtr keeps API timestamps in one timezone regardless of what the database driver returns.
-func utcPtr(t *time.Time) *time.Time {
-	if t == nil {
-		return nil
-	}
-	u := t.UTC()
-	return &u
 }

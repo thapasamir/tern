@@ -12,24 +12,15 @@ import (
 	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
 	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
+	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
 )
 
 func newService() (*Service, *fakeRepo, *fakeQueue) {
 	repo, q := newFakeRepo(), &fakeQueue{}
 	svc := NewService(repo, q)
 	svc.now = func() time.Time { return testNow }
-	svc.log = quietLogger()
+	svc.log = testutil.QuietLogger()
 	return svc, repo, q
-}
-
-func wantCode(t *testing.T, err error, code apperror.Code) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected %s error, got nil", code)
-	}
-	if got := apperror.From(err).Code; got != code {
-		t.Fatalf("error code = %s, want %s (err: %v)", got, code, err)
-	}
 }
 
 func TestEnqueue_QueuesTheJobsAndRecordsThat(t *testing.T) {
@@ -131,9 +122,9 @@ func TestGetWithAttempts(t *testing.T) {
 	}
 
 	_, _, err = svc.GetWithAttempts(context.Background(), uuid.New(), d.ID) // another tenant
-	wantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
 	_, _, err = svc.GetWithAttempts(context.Background(), tenantID, uuid.New())
-	wantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
 }
 
 func TestListByEvent_IsTenantScopedAndPaginated(t *testing.T) {

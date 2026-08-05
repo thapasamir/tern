@@ -26,11 +26,7 @@ func (c *Controller) create(w http.ResponseWriter, r *http.Request) error {
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		return err
 	}
-	e, err := c.svc.Create(r.Context(), tenantID, CreateInput{
-		URL:         req.URL,
-		Description: req.Description,
-		EventTypes:  req.EventTypes,
-	})
+	e, err := c.svc.Create(r.Context(), tenantID, CreateInput(req))
 	if err != nil {
 		return err
 	}

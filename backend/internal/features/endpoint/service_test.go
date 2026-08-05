@@ -12,7 +12,9 @@ import (
 
 	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
 	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
+	"github.com/samirthapa/webhook-platform/internal/shared/ptr"
 	"github.com/samirthapa/webhook-platform/internal/shared/signing"
+	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
 )
 
 // fakeRepo is an in-memory, tenant-scoped Repository.
@@ -117,16 +119,6 @@ func (stubValidator) Validate(raw string) error {
 
 func newService() *Service { return NewService(newFakeRepo(), stubValidator{}) }
 
-func wantCode(t *testing.T, err error, code apperror.Code) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected %s error, got nil", code)
-	}
-	if got := apperror.From(err).Code; got != code {
-		t.Fatalf("error code = %s, want %s (err: %v)", got, code, err)
-	}
-}
-
 func mustCreate(t *testing.T, svc *Service, tenantID uuid.UUID, in CreateInput) Endpoint {
 	t.Helper()
 	e, err := svc.Create(context.Background(), tenantID, in)
@@ -171,7 +163,7 @@ func TestCreate_Validation(t *testing.T) {
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := svc.Create(context.Background(), uuid.New(), in)
-			wantCode(t, err, apperror.CodeInvalid)
+			testutil.WantCode(t, err, apperror.CodeInvalid)
 		})
 	}
 }
@@ -202,16 +194,16 @@ func TestEndpointsAreIsolatedBetweenTenants(t *testing.T) {
 	e := mustCreate(t, svc, owner, CreateInput{URL: "https://example.com"})
 
 	_, err := svc.Get(ctx, other, e.ID)
-	wantCode(t, err, apperror.CodeNotFound)
-	_, err = svc.Update(ctx, other, e.ID, UpdateInput{Description: ptr("hijack")})
-	wantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
+	_, err = svc.Update(ctx, other, e.ID, UpdateInput{Description: ptr.To("hijack")})
+	testutil.WantCode(t, err, apperror.CodeNotFound)
 	_, err = svc.RotateSecret(ctx, other, e.ID)
-	wantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
 	_, err = svc.Disable(ctx, other, e.ID, "x")
-	wantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
 	_, err = svc.Enable(ctx, other, e.ID)
-	wantCode(t, err, apperror.CodeNotFound)
-	wantCode(t, svc.Delete(ctx, other, e.ID), apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, svc.Delete(ctx, other, e.ID), apperror.CodeNotFound)
 
 	// ...and none of those attempts changed anything.
 	got, err := svc.Get(ctx, owner, e.ID)
@@ -226,7 +218,7 @@ func TestUpdate_IsPartial(t *testing.T) {
 		URL: "https://example.com/a", Description: "old", EventTypes: []string{"a.b"},
 	})
 
-	got, err := svc.Update(ctx, tenantID, e.ID, UpdateInput{Description: ptr("new")})
+	got, err := svc.Update(ctx, tenantID, e.ID, UpdateInput{Description: ptr.To("new")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,10 +241,10 @@ func TestUpdate_InvalidInputChangesNothing(t *testing.T) {
 	e := mustCreate(t, svc, tenantID, CreateInput{URL: "https://example.com/a", Description: "keep"})
 
 	_, err := svc.Update(ctx, tenantID, e.ID, UpdateInput{
-		Description: ptr("changed"),
-		URL:         ptr("https://bad.example.com"),
+		Description: ptr.To("changed"),
+		URL:         ptr.To("https://bad.example.com"),
 	})
-	wantCode(t, err, apperror.CodeInvalid)
+	testutil.WantCode(t, err, apperror.CodeInvalid)
 
 	got, _ := svc.Get(ctx, tenantID, e.ID)
 	if got.Description != "keep" || got.URL != "https://example.com/a" {
@@ -303,7 +295,7 @@ func TestDisable_RequiresAReason(t *testing.T) {
 	svc, tenantID := newService(), uuid.New()
 	e := mustCreate(t, svc, tenantID, CreateInput{URL: "https://example.com"})
 	_, err := svc.Disable(context.Background(), tenantID, e.ID, "  ")
-	wantCode(t, err, apperror.CodeInternal) // caller bug, not a client error
+	testutil.WantCode(t, err, apperror.CodeInternal) // caller bug, not a client error
 }
 
 func TestDelete(t *testing.T) {
@@ -314,8 +306,8 @@ func TestDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := svc.Get(ctx, tenantID, e.ID)
-	wantCode(t, err, apperror.CodeNotFound)
-	wantCode(t, svc.Delete(ctx, tenantID, e.ID), apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, svc.Delete(ctx, tenantID, e.ID), apperror.CodeNotFound)
 }
 
 func TestList_PagesThroughEverythingNewestFirstWithoutDuplicates(t *testing.T) {
@@ -357,7 +349,7 @@ func TestList_PagesThroughEverythingNewestFirstWithoutDuplicates(t *testing.T) {
 func TestInternalErrorsAreNotLeaked(t *testing.T) {
 	svc := NewService(brokenRepo{newFakeRepo()}, stubValidator{})
 	_, err := svc.Create(context.Background(), uuid.New(), CreateInput{URL: "https://example.com"})
-	wantCode(t, err, apperror.CodeInternal)
+	testutil.WantCode(t, err, apperror.CodeInternal)
 	if strings.Contains(apperror.From(err).Message, "boom") {
 		t.Fatal("internal cause leaked into the client-facing message")
 	}
@@ -368,5 +360,3 @@ type brokenRepo struct{ *fakeRepo }
 func (brokenRepo) Create(context.Context, Endpoint) error {
 	return errors.New("boom: connection refused")
 }
-
-func ptr[T any](v T) *T { return &v }

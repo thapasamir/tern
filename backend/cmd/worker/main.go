@@ -79,16 +79,12 @@ func run() error {
 	}
 
 	var wg sync.WaitGroup
-	spawn := func(fn func()) {
-		wg.Add(1)
-		go func() { defer wg.Done(); fn() }()
-	}
 
 	log.Info("worker started", "concurrency", cfg.WorkerConcurrency, "delivery_timeout", cfg.DeliveryTimeout)
-	spawn(func() { runner.Run(ctx) })
+	wg.Go(func() { runner.Run(ctx) })
 
 	// Jobs whose worker died hold a lease that eventually expires; hand them back to the queue.
-	spawn(func() {
+	wg.Go(func() {
 		worker.Every(ctx, log, recoverInterval, "recover expired leases", func(ctx context.Context) error {
 			n, err := jobs.RecoverExpired(ctx)
 			if n > 0 {
@@ -98,7 +94,7 @@ func run() error {
 		})
 	})
 	// Deliveries committed to Postgres but never queued (crash or Redis outage in between).
-	spawn(func() {
+	wg.Go(func() {
 		worker.Every(ctx, log, sweepInterval, "enqueue orphaned deliveries", deliveries.EnqueueOrphans)
 	})
 

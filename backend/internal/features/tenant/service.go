@@ -10,12 +10,12 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 
 	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
+	"github.com/samirthapa/webhook-platform/internal/shared/validate"
 )
 
 const (
@@ -43,7 +43,7 @@ type CreatedKey struct {
 
 // CreateTenant creates a tenant and its first API key atomically.
 func (s *Service) CreateTenant(ctx context.Context, name string) (Tenant, CreatedKey, error) {
-	name, err := validateName(name)
+	name, err := validate.Text("name", name, maxNameLen, true)
 	if err != nil {
 		return Tenant{}, CreatedKey{}, err
 	}
@@ -61,7 +61,7 @@ func (s *Service) CreateTenant(ctx context.Context, name string) (Tenant, Create
 }
 
 func (s *Service) CreateAPIKey(ctx context.Context, tenantID uuid.UUID, name string) (CreatedKey, error) {
-	name, err := validateName(name)
+	name, err := validate.Text("name", name, maxNameLen, true)
 	if err != nil {
 		return CreatedKey{}, err
 	}
@@ -70,21 +70,15 @@ func (s *Service) CreateAPIKey(ctx context.Context, tenantID uuid.UUID, name str
 		return CreatedKey{}, err
 	}
 	if err := s.repo.CreateAPIKey(ctx, k, hash); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return CreatedKey{}, apperror.NotFound("tenant not found")
-		}
-		return CreatedKey{}, apperror.Internal(err)
+		return CreatedKey{}, apperror.FromStore(err, "tenant not found")
 	}
 	return CreatedKey{APIKey: k, Plain: plain}, nil
 }
 
 func (s *Service) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 	t, err := s.repo.GetTenant(ctx, id)
-	if errors.Is(err, ErrNotFound) {
-		return Tenant{}, apperror.NotFound("tenant not found")
-	}
 	if err != nil {
-		return Tenant{}, apperror.Internal(err)
+		return Tenant{}, apperror.FromStore(err, "tenant not found")
 	}
 	return t, nil
 }
@@ -98,12 +92,8 @@ func (s *Service) ListAPIKeys(ctx context.Context, tenantID uuid.UUID) ([]APIKey
 }
 
 func (s *Service) RevokeAPIKey(ctx context.Context, tenantID, keyID uuid.UUID) error {
-	err := s.repo.RevokeAPIKey(ctx, tenantID, keyID)
-	if errors.Is(err, ErrNotFound) {
-		return apperror.NotFound("api key not found")
-	}
-	if err != nil {
-		return apperror.Internal(err)
+	if err := s.repo.RevokeAPIKey(ctx, tenantID, keyID); err != nil {
+		return apperror.FromStore(err, "api key not found")
 	}
 	return nil
 }
@@ -152,15 +142,4 @@ func (s *Service) newKey(tenantID uuid.UUID, name string, now time.Time) (APIKey
 func hashKey(key string) []byte {
 	sum := sha256.Sum256([]byte(key))
 	return sum[:]
-}
-
-func validateName(name string) (string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", apperror.Invalid("name is required")
-	}
-	if utf8.RuneCountInString(name) > maxNameLen {
-		return "", apperror.Invalid(fmt.Sprintf("name must be at most %d characters", maxNameLen))
-	}
-	return name, nil
 }

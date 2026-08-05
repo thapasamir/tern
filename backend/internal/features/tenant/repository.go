@@ -11,11 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	tenantdb "github.com/samirthapa/webhook-platform/internal/features/tenant/db"
+	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
 	"github.com/samirthapa/webhook-platform/internal/shared/database"
 )
 
 // ErrNotFound is returned by repositories when a row does not exist.
-var ErrNotFound = errors.New("tenant: not found")
+var ErrNotFound = apperror.ErrNotFound
 
 // Repository is the persistence contract the service depends on.
 type Repository interface {
@@ -68,11 +69,8 @@ func (r *pgRepository) CreateAPIKey(ctx context.Context, k APIKey, keyHash []byt
 
 func (r *pgRepository) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 	row, err := r.q.GetTenant(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Tenant{}, ErrNotFound
-	}
 	if err != nil {
-		return Tenant{}, fmt.Errorf("get tenant: %w", err)
+		return Tenant{}, database.WrapErr(err, "get tenant")
 	}
 	return Tenant{ID: row.ID, Name: row.Name, CreatedAt: row.CreatedAt}, nil
 }
@@ -92,22 +90,13 @@ func (r *pgRepository) ListAPIKeys(ctx context.Context, tenantID uuid.UUID) ([]A
 // RevokeAPIKey is idempotent: revoking an already revoked key succeeds.
 func (r *pgRepository) RevokeAPIKey(ctx context.Context, tenantID, keyID uuid.UUID) error {
 	n, err := r.q.RevokeAPIKey(ctx, tenantdb.RevokeAPIKeyParams{ID: keyID, TenantID: tenantID})
-	if err != nil {
-		return fmt.Errorf("revoke api key: %w", err)
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return database.RequireRow(n, err, "revoke api key")
 }
 
 func (r *pgRepository) FindActiveKeyByHash(ctx context.Context, keyHash []byte) (APIKey, error) {
 	row, err := r.q.FindActiveAPIKeyByHash(ctx, keyHash)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return APIKey{}, ErrNotFound
-	}
 	if err != nil {
-		return APIKey{}, fmt.Errorf("find api key: %w", err)
+		return APIKey{}, database.WrapErr(err, "find api key")
 	}
 	return APIKey(row), nil
 }

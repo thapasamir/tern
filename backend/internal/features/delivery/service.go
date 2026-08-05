@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -96,9 +95,4 @@ func (s *Service) ListByEvent(ctx context.Context, tenantID, eventID uuid.UUID, 
 	return pagination.NewResult(rows, p, func(d Delivery) uuid.UUID { return d.ID }), nil
 }
 
-func mapRepoError(err error) error {
-	if errors.Is(err, ErrNotFound) {
-		return apperror.NotFound("delivery not found")
-	}
-	return apperror.Internal(err)
-}
+func mapRepoError(err error) error { return apperror.FromStore(err, "delivery not found") }

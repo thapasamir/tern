@@ -2,11 +2,12 @@ include .env
 export
 
 GOOSE = go run github.com/pressly/goose/v3/cmd/goose@v3.24.1
+STATICCHECK = go run honnef.co/go/tools/cmd/staticcheck@v0.8.2
 # sqlc runs from its official Docker image: pinned version, no local C toolchain needed
 # (building it from source fails on recent macOS SDKs).
 SQLC  = docker run --rm -v "$(CURDIR):/src" -w /src sqlc/sqlc:1.28.0
 
-.PHONY: up down run worker receiver build test vet smoke sqlc sqlc-check migrate-up migrate-down migrate-status migrate-new
+.PHONY: up down run worker receiver build test vet lint smoke sqlc sqlc-check migrate-up migrate-down migrate-status migrate-new
 
 # Regenerate type-safe Go code from migrations/ and each feature's queries.sql.
 sqlc:
@@ -42,6 +43,10 @@ test:
 
 vet:
 	go vet ./...
+
+# Static analysis beyond go vet: dead code, misuse of the standard library, simplifications.
+lint:
+	$(STATICCHECK) ./...
 
 migrate-up:
 	$(GOOSE) -dir migrations postgres "$(DATABASE_URL)" up

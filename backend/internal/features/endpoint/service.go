@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
 	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
 	"github.com/samirthapa/webhook-platform/internal/shared/signing"
+	"github.com/samirthapa/webhook-platform/internal/shared/validate"
 )
 
 const (
@@ -59,7 +59,7 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput
 	if err != nil {
 		return Endpoint{}, err
 	}
-	description, err := validateDescription(in.Description)
+	description, err := validate.Text("description", in.Description, maxDescriptionLen, false)
 	if err != nil {
 		return Endpoint{}, err
 	}
@@ -120,7 +120,7 @@ func (s *Service) Update(ctx context.Context, tenantID, id uuid.UUID, in UpdateI
 		}
 	}
 	if in.Description != nil {
-		if e.Description, err = validateDescription(*in.Description); err != nil {
+		if e.Description, err = validate.Text("description", *in.Description, maxDescriptionLen, false); err != nil {
 			return Endpoint{}, err
 		}
 	}
@@ -192,14 +192,6 @@ func (s *Service) validateURL(raw string) (string, error) {
 	return raw, nil
 }
 
-func validateDescription(d string) (string, error) {
-	d = strings.TrimSpace(d)
-	if utf8.RuneCountInString(d) > maxDescriptionLen {
-		return "", apperror.Invalid(fmt.Sprintf("description must be at most %d characters", maxDescriptionLen))
-	}
-	return d, nil
-}
-
 // normalizeEventTypes validates, trims and de-duplicates event types, keeping first-seen order.
 // The result is never nil: an empty list means "all event types".
 func normalizeEventTypes(in []string) ([]string, error) {
@@ -222,9 +214,4 @@ func normalizeEventTypes(in []string) ([]string, error) {
 	return out, nil
 }
 
-func mapRepoError(err error) error {
-	if errors.Is(err, ErrNotFound) {
-		return apperror.NotFound("endpoint not found")
-	}
-	return apperror.Internal(err)
-}
+func mapRepoError(err error) error { return apperror.FromStore(err, "endpoint not found") }

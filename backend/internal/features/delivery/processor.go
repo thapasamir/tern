@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/samirthapa/webhook-platform/internal/shared/ptr"
 	"github.com/samirthapa/webhook-platform/internal/shared/signing"
 )
 
@@ -124,19 +125,19 @@ func newAttemptRecord(deliveryID uuid.UUID, res SendResult, started, finished ti
 	switch {
 	case res.Err != nil:
 		rec.Outcome = StatusFailed
-		rec.Error = ptr(truncate(sanitize(res.Err.Error()), maxErrorLen))
+		rec.Error = ptr.To(truncate(sanitize(res.Err.Error()), maxErrorLen))
 	case res.StatusCode >= 200 && res.StatusCode < 300:
 		rec.Outcome = StatusSucceeded
 	default:
 		rec.Outcome = StatusFailed
-		rec.Error = ptr(fmt.Sprintf("endpoint responded with HTTP %d", res.StatusCode))
+		rec.Error = ptr.To(fmt.Sprintf("endpoint responded with HTTP %d", res.StatusCode))
 	}
 
 	if res.StatusCode != 0 {
-		rec.StatusCode = ptr(res.StatusCode)
+		rec.StatusCode = ptr.To(res.StatusCode)
 	}
 	if res.Body != "" {
-		rec.ResponseBody = ptr(res.Body)
+		rec.ResponseBody = ptr.To(res.Body)
 	}
 	return rec
 }
@@ -151,5 +152,3 @@ func truncate(s string, max int) string {
 	}
 	return s[:max]
 }
-
-func ptr[T any](v T) *T { return &v }

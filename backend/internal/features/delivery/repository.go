@@ -11,13 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	deliverydb "github.com/samirthapa/webhook-platform/internal/features/delivery/db"
+	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
 	"github.com/samirthapa/webhook-platform/internal/shared/database"
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
 	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
 )
 
 // ErrNotFound is returned by repositories when no row matches.
-var ErrNotFound = errors.New("delivery: not found")
+var ErrNotFound = apperror.ErrNotFound
 
 // Repository is the persistence contract the service and processor depend on.
 type Repository interface {
@@ -51,11 +52,8 @@ func NewRepository(pool *pgxpool.Pool) Repository {
 
 func (r *pgRepository) GetWork(ctx context.Context, id uuid.UUID) (Work, error) {
 	row, err := r.q.GetDeliveryWork(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Work{}, ErrNotFound
-	}
 	if err != nil {
-		return Work{}, fmt.Errorf("get delivery work: %w", err)
+		return Work{}, database.WrapErr(err, "get delivery work")
 	}
 	return Work{
 		DeliveryID:     row.DeliveryID,
@@ -110,11 +108,8 @@ func (r *pgRepository) RecordAttempt(ctx context.Context, rec AttemptRecord) (bo
 
 func (r *pgRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (Delivery, error) {
 	row, err := r.q.GetDelivery(ctx, deliverydb.GetDeliveryParams{ID: id, TenantID: tenantID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Delivery{}, ErrNotFound
-	}
 	if err != nil {
-		return Delivery{}, fmt.Errorf("get delivery: %w", err)
+		return Delivery{}, database.WrapErr(err, "get delivery")
 	}
 	return toDelivery(row), nil
 }

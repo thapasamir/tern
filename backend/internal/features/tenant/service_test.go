@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
 )
 
 // fakeRepo is an in-memory Repository.
@@ -88,16 +89,6 @@ func (f *fakeRepo) TouchAPIKey(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func wantCode(t *testing.T, err error, code apperror.Code) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected %s error, got nil", code)
-	}
-	if got := apperror.From(err).Code; got != code {
-		t.Fatalf("error code = %s, want %s (err: %v)", got, code, err)
-	}
-}
-
 func TestCreateTenant_ReturnsUsableKeyAndStoresOnlyHash(t *testing.T) {
 	repo := newFakeRepo()
 	svc := NewService(repo)
@@ -134,7 +125,7 @@ func TestCreateTenant_RejectsBadNames(t *testing.T) {
 	svc := NewService(newFakeRepo())
 	for _, name := range []string{"", "   ", strings.Repeat("a", maxNameLen+1)} {
 		_, _, err := svc.CreateTenant(context.Background(), name)
-		wantCode(t, err, apperror.CodeInvalid)
+		testutil.WantCode(t, err, apperror.CodeInvalid)
 	}
 }
 
@@ -163,7 +154,7 @@ func TestAuthenticate_Failures(t *testing.T) {
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := svc.Authenticate(context.Background(), raw)
-			wantCode(t, err, apperror.CodeUnauthorized)
+			testutil.WantCode(t, err, apperror.CodeUnauthorized)
 		})
 	}
 
@@ -172,7 +163,7 @@ func TestAuthenticate_Failures(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := svc.Authenticate(context.Background(), key.Plain)
-	wantCode(t, err, apperror.CodeUnauthorized)
+	testutil.WantCode(t, err, apperror.CodeUnauthorized)
 }
 
 func TestAuthenticate_ThrottlesLastUsedWrites(t *testing.T) {
@@ -206,7 +197,7 @@ func TestRevokeAPIKey_IsTenantScopedAndIdempotent(t *testing.T) {
 	b, _, _ := svc.CreateTenant(ctx, "b")
 
 	// Tenant b cannot revoke tenant a's key; it looks like the key does not exist.
-	wantCode(t, svc.RevokeAPIKey(ctx, b.ID, keyA.APIKey.ID), apperror.CodeNotFound)
+	testutil.WantCode(t, svc.RevokeAPIKey(ctx, b.ID, keyA.APIKey.ID), apperror.CodeNotFound)
 
 	if err := svc.RevokeAPIKey(ctx, a.ID, keyA.APIKey.ID); err != nil {
 		t.Fatal(err)
@@ -219,13 +210,13 @@ func TestRevokeAPIKey_IsTenantScopedAndIdempotent(t *testing.T) {
 func TestCreateAPIKey_UnknownTenant(t *testing.T) {
 	svc := NewService(newFakeRepo())
 	_, err := svc.CreateAPIKey(context.Background(), uuid.New(), "ci")
-	wantCode(t, err, apperror.CodeNotFound)
+	testutil.WantCode(t, err, apperror.CodeNotFound)
 }
 
 func TestInternalErrorsAreNotLeaked(t *testing.T) {
 	svc := NewService(brokenRepo{})
 	_, _, err := svc.CreateTenant(context.Background(), "acme")
-	wantCode(t, err, apperror.CodeInternal)
+	testutil.WantCode(t, err, apperror.CodeInternal)
 	if strings.Contains(apperror.From(err).Message, "boom") {
 		t.Fatal("internal cause leaked into client-facing message")
 	}

@@ -3,16 +3,14 @@ package worker
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-)
 
-func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
+)
 
 // fakeQueue hands out the jobs it holds, at most `limit` per claim, and records every call.
 type fakeQueue struct {
@@ -70,7 +68,7 @@ func testOptions(concurrency int) Options {
 // waits for Run to return.
 func start(t *testing.T, q Queue, p Processor, opts Options) (stop func()) {
 	t.Helper()
-	r, err := NewRunner(q, p, opts, quietLogger())
+	r, err := NewRunner(q, p, opts, testutil.QuietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,12 +248,12 @@ func TestNewRunner_RejectsInconsistentOptions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			opts := good
 			mutate(&opts)
-			if _, err := NewRunner(&fakeQueue{}, processorFunc(nil), opts, quietLogger()); err == nil {
+			if _, err := NewRunner(&fakeQueue{}, processorFunc(nil), opts, testutil.QuietLogger()); err == nil {
 				t.Fatal("NewRunner accepted inconsistent options")
 			}
 		})
 	}
-	if _, err := NewRunner(&fakeQueue{}, processorFunc(nil), good, quietLogger()); err != nil {
+	if _, err := NewRunner(&fakeQueue{}, processorFunc(nil), good, testutil.QuietLogger()); err != nil {
 		t.Fatalf("NewRunner rejected valid options: %v", err)
 	}
 }
@@ -265,7 +263,7 @@ func TestEvery_RunsImmediatelyThenRepeatsAndSurvivesErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		Every(ctx, quietLogger(), 5*time.Millisecond, "test", func(context.Context) error {
+		Every(ctx, testutil.QuietLogger(), 5*time.Millisecond, "test", func(context.Context) error {
 			if runs.Add(1)%2 == 0 {
 				return errors.New("every other run fails")
 			}

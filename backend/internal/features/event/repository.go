@@ -2,7 +2,6 @@ package event
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -10,12 +9,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	eventdb "github.com/samirthapa/webhook-platform/internal/features/event/db"
+	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
 	"github.com/samirthapa/webhook-platform/internal/shared/database"
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
 )
 
 // ErrNotFound is returned by repositories when no row matches the tenant and key.
-var ErrNotFound = errors.New("event: not found")
+var ErrNotFound = apperror.ErrNotFound
 
 // CreateResult reports what Create did.
 type CreateResult struct {
@@ -116,11 +116,8 @@ func (r *pgRepository) GetByIdempotencyKey(ctx context.Context, tenantID uuid.UU
 }
 
 func toDomain(row eventdb.Event, err error, op string) (Event, error) {
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Event{}, ErrNotFound
-	}
 	if err != nil {
-		return Event{}, fmt.Errorf("%s: %w", op, err)
+		return Event{}, database.WrapErr(err, op)
 	}
 	return Event{
 		ID:             row.ID,

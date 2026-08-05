@@ -13,6 +13,7 @@ import (
 
 	"github.com/samirthapa/webhook-platform/internal/shared/ids"
 	"github.com/samirthapa/webhook-platform/internal/shared/signing"
+	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
 )
 
 var testNow = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
@@ -48,7 +49,7 @@ func newFixture(t *testing.T) *processorFixture {
 
 	p := NewProcessor(repo, sender)
 	p.now = func() time.Time { return testNow }
-	p.log = quietLogger()
+	p.log = testutil.QuietLogger()
 	return &processorFixture{proc: p, repo: repo, sender: sender, work: work}
 }
 

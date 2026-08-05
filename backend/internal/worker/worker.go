@@ -104,12 +104,10 @@ func (r *Runner) Run(ctx context.Context) {
 			slots <- struct{}{}
 		}
 		for _, id := range jobs {
-			inFlight.Add(1)
-			go func() {
-				defer inFlight.Done()
+			inFlight.Go(func() {
 				defer func() { <-slots }()
 				r.run(ctx, id)
-			}()
+			})
 		}
 	}
 }

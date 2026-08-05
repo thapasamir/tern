@@ -2,21 +2,21 @@ package endpoint
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	endpointdb "github.com/samirthapa/webhook-platform/internal/features/endpoint/db"
+	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/webhook-platform/internal/shared/database"
 	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
 )
 
 // ErrNotFound is returned by repositories when no row matches the tenant and ID.
 // A row belonging to another tenant is deliberately indistinguishable from a missing one.
-var ErrNotFound = errors.New("endpoint: not found")
+var ErrNotFound = apperror.ErrNotFound
 
 // Repository is the persistence contract the service depends on. Every method is tenant-scoped.
 type Repository interface {
@@ -62,11 +62,8 @@ func (r *pgRepository) Create(ctx context.Context, e Endpoint) error {
 
 func (r *pgRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (Endpoint, error) {
 	row, err := r.q.GetEndpoint(ctx, endpointdb.GetEndpointParams{ID: id, TenantID: tenantID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Endpoint{}, ErrNotFound
-	}
 	if err != nil {
-		return Endpoint{}, fmt.Errorf("get endpoint: %w", err)
+		return Endpoint{}, database.WrapErr(err, "get endpoint")
 	}
 	return toDomain(row), nil
 }
@@ -96,42 +93,31 @@ func (r *pgRepository) Update(ctx context.Context, e Endpoint) error {
 		ID:          e.ID,
 		TenantID:    e.TenantID,
 	})
-	return requireRow(n, err, "update endpoint")
+	return database.RequireRow(n, err, "update endpoint")
 }
 
 func (r *pgRepository) UpdateSecret(ctx context.Context, tenantID, id uuid.UUID, secret string, at time.Time) error {
 	n, err := r.q.UpdateEndpointSecret(ctx, endpointdb.UpdateEndpointSecretParams{
 		Secret: secret, At: at, ID: id, TenantID: tenantID,
 	})
-	return requireRow(n, err, "update endpoint secret")
+	return database.RequireRow(n, err, "update endpoint secret")
 }
 
 func (r *pgRepository) Disable(ctx context.Context, tenantID, id uuid.UUID, reason string, at time.Time) error {
 	n, err := r.q.DisableEndpoint(ctx, endpointdb.DisableEndpointParams{
 		Reason: reason, At: at, ID: id, TenantID: tenantID,
 	})
-	return requireRow(n, err, "disable endpoint")
+	return database.RequireRow(n, err, "disable endpoint")
 }
 
 func (r *pgRepository) Enable(ctx context.Context, tenantID, id uuid.UUID, at time.Time) error {
 	n, err := r.q.EnableEndpoint(ctx, endpointdb.EnableEndpointParams{At: at, ID: id, TenantID: tenantID})
-	return requireRow(n, err, "enable endpoint")
+	return database.RequireRow(n, err, "enable endpoint")
 }
 
 func (r *pgRepository) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	n, err := r.q.DeleteEndpoint(ctx, endpointdb.DeleteEndpointParams{ID: id, TenantID: tenantID})
-	return requireRow(n, err, "delete endpoint")
-}
-
-// requireRow turns "no rows affected" into ErrNotFound and wraps driver errors with context.
-func requireRow(affected int64, err error, op string) error {
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	if affected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return database.RequireRow(n, err, "delete endpoint")
 }
 
 func toDomain(row endpointdb.Endpoint) Endpoint {

@@ -1,6 +1,10 @@
 package endpoint
 
-import "time"
+import (
+	"time"
+
+	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+)
 
 type createEndpointRequest struct {
 	URL         string   `json:"url"`
@@ -47,7 +51,7 @@ func toResponse(e Endpoint) endpointResponse {
 		EventTypes:     eventTypes,
 		Status:         e.Status,
 		DisabledReason: e.DisabledReason,
-		DisabledAt:     utcPtr(e.DisabledAt),
+		DisabledAt:     httpx.UTCPtr(e.DisabledAt),
 		CreatedAt:      e.CreatedAt.UTC(),
 		UpdatedAt:      e.UpdatedAt.UTC(),
 	}
@@ -55,13 +59,4 @@ func toResponse(e Endpoint) endpointResponse {
 
 func toResponseWithSecret(e Endpoint) endpointWithSecretResponse {
 	return endpointWithSecretResponse{endpointResponse: toResponse(e), Secret: e.Secret}
-}
-
-// utcPtr keeps API timestamps in one timezone regardless of what the database driver returns.
-func utcPtr(t *time.Time) *time.Time {
-	if t == nil {
-		return nil
-	}
-	u := t.UTC()
-	return &u
 }
