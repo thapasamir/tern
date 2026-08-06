@@ -7,6 +7,8 @@
 //	/fail                     500
 //	/status/{code}            responds with that status code
 //	/slow?ms=N                waits N milliseconds (default 30000), then 200
+//	/flaky/{n}                500 for the first n requests of each event, then 200
+//	/retry-after/{seconds}    429 with that Retry-After for the first request of each event, then 200
 //
 // GET /_received lists the recorded requests; DELETE /_received clears them.
 //
@@ -51,6 +53,9 @@ type record struct {
 type receiver struct {
 	secrets []string // empty disables signature checking; a request is valid if any secret verifies it
 
+	hitsMu sync.Mutex
+	hits   map[string]int // requests seen per webhook-id, for the paths that behave differently over time
+
 	mu       sync.Mutex
 	received []record
 }
@@ -60,7 +65,7 @@ func main() {
 	secret := flag.String("secret", os.Getenv("RECEIVER_SECRET"), "endpoint signing secret(s) (whsec_...), comma-separated; empty disables verification")
 	flag.Parse()
 
-	rcv := &receiver{secrets: splitSecrets(*secret)}
+	rcv := &receiver{secrets: splitSecrets(*secret), hits: map[string]int{}}
 	srv := &http.Server{Addr: *addr, Handler: rcv, ReadHeaderTimeout: readHeaderWait}
 
 	mode := "signature verification OFF"
@@ -104,7 +109,7 @@ func (rc *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	rc.add(rec)
 
-	status, ok := behaviour(r)
+	status, ok := rc.behaviour(w, r, rec.WebhookID)
 	if !ok {
 		return // the client went away while we were being slow
 	}
@@ -114,19 +119,31 @@ func (rc *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // behaviour decides the response from the URL path. ok is false if the client disconnected
-// while a slow response was pending.
-func behaviour(r *http.Request) (status int, ok bool) {
+// while a slow response was pending. webhookID identifies the event, so that paths which change
+// behaviour over time can count the requests made for it.
+func (rc *receiver) behaviour(w http.ResponseWriter, r *http.Request, webhookID string) (status int, ok bool) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	switch parts[0] {
 	case "fail":
 		return http.StatusInternalServerError, true
 	case "status":
-		if len(parts) > 1 {
-			if code, err := strconv.Atoi(parts[1]); err == nil && code >= 100 && code <= 599 {
-				return code, true
-			}
+		if code, ok := intArg(parts, 1); ok && code >= 100 && code <= 599 {
+			return code, true
 		}
 		return http.StatusBadRequest, true
+	case "flaky":
+		failures, _ := intArg(parts, 1)
+		if rc.countHit(webhookID) <= failures {
+			return http.StatusInternalServerError, true
+		}
+		return http.StatusOK, true
+	case "retry-after":
+		seconds, _ := intArg(parts, 1)
+		if rc.countHit(webhookID) == 1 {
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			return http.StatusTooManyRequests, true
+		}
+		return http.StatusOK, true
 	case "slow":
 		ms := defaultSlowMs
 		if v, err := strconv.Atoi(r.URL.Query().Get("ms")); err == nil && v >= 0 {
@@ -141,6 +158,23 @@ func behaviour(r *http.Request) (status int, ok bool) {
 	default:
 		return http.StatusOK, true
 	}
+}
+
+// countHit returns how many requests (this one included) have been seen for the webhook-id.
+func (rc *receiver) countHit(webhookID string) int {
+	rc.hitsMu.Lock()
+	defer rc.hitsMu.Unlock()
+	rc.hits[webhookID]++
+	return rc.hits[webhookID]
+}
+
+// intArg parses the integer path segment at index i.
+func intArg(parts []string, i int) (int, bool) {
+	if i >= len(parts) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(parts[i])
+	return n, err == nil
 }
 
 // verify accepts a request signed with any configured secret, as a customer would during rotation.

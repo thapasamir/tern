@@ -184,3 +184,43 @@ func TestSend_BlocksPrivateAddressesEvenWhenReachedThroughAHostname(t *testing.T
 		t.Fatalf("error = %v, hits = %d; a hostname resolving to loopback must be refused", res.Err, hits.Load())
 	}
 }
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{"absent", "", 0},
+		{"seconds", "120", 2 * time.Minute},
+		{"seconds with spaces", "  30 ", 30 * time.Second},
+		{"zero", "0", 0},
+		{"negative", "-5", 0},
+		{"http date in the future", now.Add(90 * time.Second).Format(http.TimeFormat), 90 * time.Second},
+		{"http date in the past", now.Add(-time.Hour).Format(http.TimeFormat), 0},
+		{"garbage", "soon", 0},
+		{"a huge number is capped instead of overflowing", "999999999999999", maxParsedRetryAfter},
+		{"a date far in the future is capped", now.Add(10 * maxParsedRetryAfter).Format(http.TimeFormat), maxParsedRetryAfter},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseRetryAfter(c.value, now); got != c.want {
+				t.Fatalf("parseRetryAfter(%q) = %v, want %v", c.value, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSend_ReportsRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "42")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	res := newLocalSender(5*time.Second).Send(context.Background(), SendRequest{URL: srv.URL})
+	if res.Err != nil || res.StatusCode != http.StatusTooManyRequests || res.RetryAfter != 42*time.Second {
+		t.Fatalf("result = %+v, want a 429 with RetryAfter of 42s", res)
+	}
+}

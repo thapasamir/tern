@@ -57,6 +57,52 @@ poll() {
 # wait_for_http URL  -> waits up to 10s for a 2xx response
 wait_for_http() { poll 10 curl -sf -o /dev/null "$1"; }
 
+# ---- running processes and creating fixtures (used by the end-to-end scripts) ----------------
+
+LOG_DIR=$(mktemp -d)
+PIDS=()
+LAST_PID=""
+
+# start NAME COMMAND [ARGS...]  -> runs a process in the background, logging to $LOG_DIR/NAME.log;
+# its pid is left in LAST_PID
+start() {
+  local name=$1
+  shift
+  "$@" >"$LOG_DIR/$name.log" 2>&1 &
+  LAST_PID=$!
+  PIDS+=("$LAST_PID")
+}
+
+# stop_all  -> stops everything start launched and removes the temp files; use it in an EXIT trap
+stop_all() {
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true # reaps it, so the shell does not print "Terminated"
+  done
+  rm -f "$HDR_FILE"
+  rm -rf "$LOG_DIR"
+}
+
+# create_endpoint TOKEN URL EVENT_TYPES_JSON  -> sets ENDPOINT_ID and ENDPOINT_SECRET
+create_endpoint() {
+  call POST /v1/endpoints "$1" "{\"url\":\"$2\",\"event_types\":$3}"
+  ENDPOINT_ID=$(field 'd["id"]')
+  ENDPOINT_SECRET=$(field 'd["secret"]')
+}
+
+# deliveries_settled TOKEN EVENT_ID COUNT  -> true once the event has COUNT deliveries, none pending
+deliveries_settled() {
+  call GET "/v1/events/$2/deliveries?limit=100" "$1"
+  [[ $(field 'len(d["data"])') == "$3" && $(field 'sum(1 for x in d["data"] if x["status"] == "pending")') == "0" ]]
+}
+
+# delivery_to EVENT_ID ENDPOINT_ID  -> prints the id of the delivery of that event to that endpoint
+# (uses $KEY as the API key; prints "none" if there is no such delivery)
+delivery_to() {
+  call GET "/v1/events/$1/deliveries?limit=100" "$KEY"
+  field "next((x['id'] for x in d['data'] if x['endpoint_id'] == '$2'), 'none')"
+}
+
 finish() {
   echo
   echo "$PASS passed, $FAIL failed"

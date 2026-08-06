@@ -150,3 +150,40 @@ func TestListByEvent_IsTenantScopedAndPaginated(t *testing.T) {
 		}
 	}
 }
+
+func TestReconcileOverdue_RequeuesDeliveriesWhoseJobsWereLost(t *testing.T) {
+	svc, repo, q := newService()
+	lost := []uuid.UUID{ids.New(), ids.New()}
+	repo.overdue = lost
+
+	if err := svc.ReconcileOverdue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := testNow.Add(-overdueGrace); !repo.overdueCutoff.Equal(want) {
+		t.Errorf("looked for deliveries overdue since %v, want %v: a queue that is merely a little slow must be left alone", repo.overdueCutoff, want)
+	}
+	if len(q.jobs) != 2 || len(repo.marked) != 1 {
+		t.Fatalf("queued %d jobs and marked %d batches; want 2 and 1", len(q.jobs), len(repo.marked))
+	}
+	if !q.runAts[0].Equal(testNow) {
+		t.Errorf("overdue jobs scheduled for %v, want now", q.runAts[0])
+	}
+}
+
+func TestReconcileOverdue_NothingOverdueIsQuiet(t *testing.T) {
+	svc, _, q := newService()
+	if err := svc.ReconcileOverdue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.jobs) != 0 {
+		t.Fatal("nothing is overdue, nothing should be queued")
+	}
+}
+
+func TestReconcileOverdue_ReportsLookupFailures(t *testing.T) {
+	svc, repo, _ := newService()
+	repo.overdueErr = errors.New("db down")
+	if err := svc.ReconcileOverdue(context.Background()); err == nil {
+		t.Fatal("want the lookup error")
+	}
+}

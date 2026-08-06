@@ -145,3 +145,45 @@ func TestLeasedJobsAreInvisibleToOtherClaimers(t *testing.T) {
 		t.Fatalf("a leased job was handed out again: %v", got)
 	}
 }
+
+func TestRetry_ReschedulesTheJobAndReleasesItsLease(t *testing.T) {
+	q, now := newTestQueue(t)
+	ctx := context.Background()
+	_ = q.Enqueue(ctx, epoch, "a")
+	mustClaim(t, q, 1, time.Minute)
+
+	if err := q.Retry(ctx, "a", epoch.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Not runnable before its new time...
+	*now = epoch.Add(30 * time.Minute)
+	if got := mustClaim(t, q, 10, time.Minute); len(got) != 0 {
+		t.Fatalf("retried job claimed %v before it was due", got)
+	}
+	// ...and the old lease no longer exists, so recovery must not resurrect it early.
+	*now = epoch.Add(2 * time.Minute)
+	if n, err := q.RecoverExpired(ctx); err != nil || n != 0 {
+		t.Fatalf("RecoverExpired = %d, %v; a retried job holds no lease", n, err)
+	}
+
+	// ...and runnable once it is due.
+	*now = epoch.Add(time.Hour)
+	if got := mustClaim(t, q, 10, time.Minute); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("claimed %v once due, want [a]", got)
+	}
+}
+
+func TestRetry_ReplacesAnExistingSchedule(t *testing.T) {
+	q, _ := newTestQueue(t)
+	ctx := context.Background()
+	_ = q.Enqueue(ctx, epoch.Add(time.Hour), "a")
+
+	// Unlike Enqueue, Retry means "run at exactly this time", so it moves the job earlier too.
+	if err := q.Retry(ctx, "a", epoch); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustClaim(t, q, 10, time.Minute); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("claimed %v, want [a] after retrying it to now", got)
+	}
+}

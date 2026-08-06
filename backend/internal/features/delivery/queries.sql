@@ -4,6 +4,9 @@
 SELECT d.id            AS delivery_id,
        d.tenant_id     AS tenant_id,
        d.status        AS delivery_status,
+       d.attempt_count AS attempt_count,
+       d.next_attempt_at AS next_attempt_at,
+       d.endpoint_id   AS endpoint_id,
        d.event_id      AS event_id,
        e.type          AS event_type,
        e.payload       AS event_payload,
@@ -20,12 +23,52 @@ WHERE d.id = $1;
 -- which is how duplicate jobs are detected without any locking.
 -- name: CompleteDelivery :one
 UPDATE deliveries
-SET status        = sqlc.arg(status),
-    attempt_count = attempt_count + 1,
-    completed_at  = sqlc.arg(at)::timestamptz,
-    updated_at    = sqlc.arg(at)::timestamptz
+SET status          = sqlc.arg(status),
+    attempt_count   = attempt_count + 1,
+    next_attempt_at = NULL,
+    completed_at    = sqlc.arg(at)::timestamptz,
+    updated_at      = sqlc.arg(at)::timestamptz
 WHERE id = sqlc.arg(id) AND status = 'pending'
 RETURNING attempt_count;
+
+-- Records a failed attempt that will be retried: the delivery stays pending, with its next due time.
+-- Like CompleteDelivery, matching no row means another worker already handled it.
+-- name: ScheduleRetry :one
+UPDATE deliveries
+SET attempt_count   = attempt_count + 1,
+    next_attempt_at = sqlc.arg(next_attempt_at)::timestamptz,
+    updated_at      = sqlc.arg(at)::timestamptz
+WHERE id = sqlc.arg(id) AND status = 'pending'
+RETURNING attempt_count;
+
+-- Fails every pending delivery of an endpoint that has just been disabled, leaving an attempt
+-- row behind so each delivery's log says why it ended. Returns how many deliveries it failed.
+-- name: FailPendingForEndpoint :execrows
+WITH failed AS (
+    UPDATE deliveries
+    SET status          = 'failed',
+        attempt_count   = attempt_count + 1,
+        next_attempt_at = NULL,
+        completed_at    = sqlc.arg(at)::timestamptz,
+        updated_at      = sqlc.arg(at)::timestamptz
+    WHERE endpoint_id = sqlc.arg(endpoint_id) AND status = 'pending'
+    RETURNING id, attempt_count
+)
+INSERT INTO delivery_attempts (id, delivery_id, attempt_number, error, duration_ms, started_at)
+SELECT gen_random_uuid(), failed.id, failed.attempt_count, sqlc.arg(reason)::text, 0, sqlc.arg(at)::timestamptz
+FROM failed;
+
+-- Pending deliveries that are overdue: their job should have run but evidently has not, for
+-- instance because Redis lost its data. The reconciler queues them again.
+-- The updated_at condition keeps one batch from being picked again and again: queueing a delivery
+-- touches it, so the reconciler moves on to the next ones while the queue works through these.
+-- name: ListOverdueDeliveries :many
+SELECT id FROM deliveries
+WHERE status = 'pending'
+  AND COALESCE(next_attempt_at, created_at) < sqlc.arg(due_before)::timestamptz
+  AND updated_at < sqlc.arg(due_before)::timestamptz
+ORDER BY COALESCE(next_attempt_at, created_at)
+LIMIT sqlc.arg(row_limit);
 
 -- name: InsertAttempt :exec
 INSERT INTO delivery_attempts (id, delivery_id, attempt_number, status_code, error, response_body, duration_ms, started_at)
@@ -56,7 +99,8 @@ WHERE status = 'pending' AND enqueued_at IS NULL AND created_at < sqlc.arg(older
 ORDER BY created_at
 LIMIT sqlc.arg(row_limit);
 
+-- Records that the deliveries are in the queue. Safe to repeat: the first enqueue time is kept.
 -- name: MarkDeliveriesEnqueued :exec
 UPDATE deliveries
-SET enqueued_at = sqlc.arg(at)::timestamptz, updated_at = sqlc.arg(at)::timestamptz
-WHERE id = ANY(sqlc.arg(ids)::uuid[]) AND enqueued_at IS NULL;
+SET enqueued_at = COALESCE(enqueued_at, sqlc.arg(at)::timestamptz), updated_at = sqlc.arg(at)::timestamptz
+WHERE id = ANY(sqlc.arg(ids)::uuid[]);

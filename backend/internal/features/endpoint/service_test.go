@@ -91,9 +91,37 @@ func (f *fakeRepo) Enable(_ context.Context, tenantID, id uuid.UUID, _ time.Time
 	if err != nil {
 		return err
 	}
-	e.Status, e.DisabledReason, e.DisabledAt = StatusActive, nil, nil
+	e.Status, e.DisabledReason, e.DisabledAt, e.ConsecutiveFailures = StatusActive, nil, nil, 0
 	f.rows[id] = e
 	return nil
+}
+
+func (f *fakeRepo) IncrementFailures(_ context.Context, tenantID, id uuid.UUID) (int, error) {
+	e, err := f.find(tenantID, id)
+	if err != nil {
+		return 0, err
+	}
+	e.ConsecutiveFailures++
+	f.rows[id] = e
+	return e.ConsecutiveFailures, nil
+}
+
+func (f *fakeRepo) ResetFailures(_ context.Context, tenantID, id uuid.UUID) error {
+	if e, err := f.find(tenantID, id); err == nil {
+		e.ConsecutiveFailures = 0
+		f.rows[id] = e
+	}
+	return nil // like the real query, a missing row or an already-zero count is not an error
+}
+
+func (f *fakeRepo) DisableIfActive(_ context.Context, tenantID, id uuid.UUID, reason string, at time.Time) (bool, error) {
+	e, err := f.find(tenantID, id)
+	if err != nil || e.Status != StatusActive {
+		return false, nil
+	}
+	e.Status, e.DisabledReason, e.DisabledAt = StatusDisabled, &reason, &at
+	f.rows[id] = e
+	return true, nil
 }
 
 func (f *fakeRepo) Delete(_ context.Context, tenantID, id uuid.UUID) error {
@@ -308,6 +336,88 @@ func TestDelete(t *testing.T) {
 	_, err := svc.Get(ctx, tenantID, e.ID)
 	testutil.WantCode(t, err, apperror.CodeNotFound)
 	testutil.WantCode(t, svc.Delete(ctx, tenantID, e.ID), apperror.CodeNotFound)
+}
+
+func TestRecordFailure_DisablesTheEndpointAfterTooManyInARow(t *testing.T) {
+	svc, ctx, tenantID := newService(), context.Background(), uuid.New()
+	e := mustCreate(t, svc, tenantID, CreateInput{URL: "https://example.com"})
+
+	for i := 1; i <= 2; i++ {
+		disabled, err := svc.RecordFailure(ctx, tenantID, e.ID, 3)
+		if err != nil || disabled {
+			t.Fatalf("failure %d: disabled=%v err=%v; the limit is 3", i, disabled, err)
+		}
+	}
+	got, _ := svc.Get(ctx, tenantID, e.ID)
+	if got.ConsecutiveFailures != 2 || got.Status != StatusActive {
+		t.Fatalf("after 2 failures: %d failures, status %s; want 2 and active", got.ConsecutiveFailures, got.Status)
+	}
+
+	disabled, err := svc.RecordFailure(ctx, tenantID, e.ID, 3)
+	if err != nil || !disabled {
+		t.Fatalf("third failure: disabled=%v err=%v; want it to disable the endpoint", disabled, err)
+	}
+	got, _ = svc.Get(ctx, tenantID, e.ID)
+	if got.Status != StatusDisabled || got.DisabledReason == nil ||
+		*got.DisabledReason != "disabled automatically after 3 consecutive failed attempts" {
+		t.Fatalf("endpoint = %+v, want disabled with a reason naming the failure count", got)
+	}
+}
+
+func TestRecordFailure_ReportsTheDisablingOnlyOnce(t *testing.T) {
+	svc, ctx, tenantID := newService(), context.Background(), uuid.New()
+	e := mustCreate(t, svc, tenantID, CreateInput{URL: "https://example.com"})
+
+	first, _ := svc.RecordFailure(ctx, tenantID, e.ID, 1)
+	second, err := svc.RecordFailure(ctx, tenantID, e.ID, 1) // an attempt already in flight when it was disabled
+	if !first || second || err != nil {
+		t.Fatalf("first=%v second=%v err=%v; only the call that did the disabling may report true", first, second, err)
+	}
+}
+
+func TestRecordFailure_IgnoresEndpointsThatWereDeleted(t *testing.T) {
+	svc := newService()
+	disabled, err := svc.RecordFailure(context.Background(), uuid.New(), uuid.New(), 1)
+	if disabled || err != nil {
+		t.Fatalf("RecordFailure = %v, %v; a deleted endpoint is not an error", disabled, err)
+	}
+}
+
+func TestRecordSuccess_ClearsTheStreak(t *testing.T) {
+	svc, ctx, tenantID := newService(), context.Background(), uuid.New()
+	e := mustCreate(t, svc, tenantID, CreateInput{URL: "https://example.com"})
+	_, _ = svc.RecordFailure(ctx, tenantID, e.ID, 10)
+	_, _ = svc.RecordFailure(ctx, tenantID, e.ID, 10)
+
+	if err := svc.RecordSuccess(ctx, tenantID, e.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Get(ctx, tenantID, e.ID); got.ConsecutiveFailures != 0 {
+		t.Fatalf("failures = %d after a success, want 0", got.ConsecutiveFailures)
+	}
+}
+
+func TestDisableIfActive_KeepsTheFirstReason(t *testing.T) {
+	svc, ctx, tenantID := newService(), context.Background(), uuid.New()
+	e := mustCreate(t, svc, tenantID, CreateInput{URL: "https://example.com"})
+
+	first, _ := svc.DisableIfActive(ctx, tenantID, e.ID, "endpoint responded with HTTP 410 Gone")
+	second, _ := svc.DisableIfActive(ctx, tenantID, e.ID, "something else")
+	got, _ := svc.Get(ctx, tenantID, e.ID)
+	if !first || second || *got.DisabledReason != "endpoint responded with HTTP 410 Gone" {
+		t.Fatalf("first=%v second=%v reason=%v; the original reason must survive", first, second, *got.DisabledReason)
+	}
+}
+
+func TestEnable_StartsWithACleanFailureCount(t *testing.T) {
+	svc, ctx, tenantID := newService(), context.Background(), uuid.New()
+	e := mustCreate(t, svc, tenantID, CreateInput{URL: "https://example.com"})
+	_, _ = svc.RecordFailure(ctx, tenantID, e.ID, 1) // disables it with a count of 1
+
+	got, err := svc.Enable(ctx, tenantID, e.ID)
+	if err != nil || got.ConsecutiveFailures != 0 || got.Status != StatusActive {
+		t.Fatalf("Enable = %+v, %v; want an active endpoint with no failures, or it would be disabled again at once", got, err)
+	}
 }
 
 func TestList_PagesThroughEverythingNewestFirstWithoutDuplicates(t *testing.T) {

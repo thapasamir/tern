@@ -25,9 +25,13 @@ type Repository interface {
 	// GetWork loads what is needed to attempt a delivery. It is not tenant-scoped: it serves the
 	// worker, whose job ids come from the platform's own queue.
 	GetWork(ctx context.Context, id uuid.UUID) (Work, error)
-	// RecordAttempt stores the attempt and completes the delivery in one transaction.
+	// RecordAttempt stores the attempt and updates the delivery in one transaction: it completes
+	// the delivery, or, when rec asks for a retry, keeps it pending with its next due time.
 	// recorded is false when the delivery had already been completed by someone else.
 	RecordAttempt(ctx context.Context, rec AttemptRecord) (recorded bool, err error)
+	// FailPendingForEndpoint fails every pending delivery of an endpoint that was just disabled,
+	// recording reason as the error of a final attempt on each. It returns how many it failed.
+	FailPendingForEndpoint(ctx context.Context, endpointID uuid.UUID, reason string, at time.Time) (int64, error)
 
 	// The remaining methods back the API and are tenant-scoped.
 	Get(ctx context.Context, tenantID, id uuid.UUID) (Delivery, error)
@@ -37,6 +41,9 @@ type Repository interface {
 	// ListUnenqueued and MarkEnqueued implement the outbox sweeper.
 	ListUnenqueued(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error)
 	MarkEnqueued(ctx context.Context, deliveryIDs []uuid.UUID, at time.Time) error
+	// ListOverdue returns pending deliveries that are due before dueBefore and were not touched
+	// since, for the reconciler that re-queues jobs lost with the queue's data.
+	ListOverdue(ctx context.Context, dueBefore time.Time, limit int) ([]uuid.UUID, error)
 }
 
 // pgRepository implements Repository on top of the sqlc-generated queries.
@@ -58,7 +65,10 @@ func (r *pgRepository) GetWork(ctx context.Context, id uuid.UUID) (Work, error) 
 	return Work{
 		DeliveryID:     row.DeliveryID,
 		TenantID:       row.TenantID,
+		EndpointID:     row.EndpointID,
 		Status:         Status(row.DeliveryStatus),
+		AttemptCount:   int(row.AttemptCount),
+		NextAttemptAt:  row.NextAttemptAt,
 		EventID:        row.EventID,
 		EventType:      row.EventType,
 		Payload:        row.EventPayload,
@@ -74,18 +84,14 @@ func (r *pgRepository) RecordAttempt(ctx context.Context, rec AttemptRecord) (bo
 	err := database.WithTx(ctx, r.pool, func(tx pgx.Tx) error {
 		q := r.q.WithTx(tx)
 
-		// Completing a still-pending delivery doubles as the lock that decides which of two
+		// Updating a still-pending delivery doubles as the lock that decides which of two
 		// racing workers records its attempt: the loser matches no row.
-		attemptNumber, err := q.CompleteDelivery(ctx, deliverydb.CompleteDeliveryParams{
-			Status: string(rec.Outcome),
-			At:     rec.FinishedAt,
-			ID:     rec.DeliveryID,
-		})
+		attemptNumber, err := r.updateDelivery(ctx, q, rec)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("complete delivery: %w", err)
+			return fmt.Errorf("update delivery: %w", err)
 		}
 
 		if err := q.InsertAttempt(ctx, deliverydb.InsertAttemptParams{
@@ -104,6 +110,48 @@ func (r *pgRepository) RecordAttempt(ctx context.Context, rec AttemptRecord) (bo
 		return nil
 	})
 	return recorded, err
+}
+
+// updateDelivery applies an attempt's outcome to its delivery and returns the attempt's number.
+func (r *pgRepository) updateDelivery(ctx context.Context, q *deliverydb.Queries, rec AttemptRecord) (int32, error) {
+	if rec.Outcome != StatusPending {
+		return q.CompleteDelivery(ctx, deliverydb.CompleteDeliveryParams{
+			Status: string(rec.Outcome),
+			At:     rec.FinishedAt,
+			ID:     rec.DeliveryID,
+		})
+	}
+	if rec.RetryAt == nil {
+		return 0, errors.New("attempt record asks for a retry but has no RetryAt")
+	}
+	return q.ScheduleRetry(ctx, deliverydb.ScheduleRetryParams{
+		NextAttemptAt: *rec.RetryAt,
+		At:            rec.FinishedAt,
+		ID:            rec.DeliveryID,
+	})
+}
+
+func (r *pgRepository) FailPendingForEndpoint(ctx context.Context, endpointID uuid.UUID, reason string, at time.Time) (int64, error) {
+	n, err := r.q.FailPendingForEndpoint(ctx, deliverydb.FailPendingForEndpointParams{
+		EndpointID: endpointID,
+		Reason:     reason,
+		At:         at,
+	})
+	if err != nil {
+		return 0, database.WrapErr(err, "fail pending deliveries of endpoint")
+	}
+	return n, nil
+}
+
+func (r *pgRepository) ListOverdue(ctx context.Context, dueBefore time.Time, limit int) ([]uuid.UUID, error) {
+	rows, err := r.q.ListOverdueDeliveries(ctx, deliverydb.ListOverdueDeliveriesParams{
+		DueBefore: dueBefore,
+		RowLimit:  int32(limit),
+	})
+	if err != nil {
+		return nil, database.WrapErr(err, "list overdue deliveries")
+	}
+	return rows, nil
 }
 
 func (r *pgRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (Delivery, error) {
@@ -163,16 +211,17 @@ func (r *pgRepository) MarkEnqueued(ctx context.Context, deliveryIDs []uuid.UUID
 
 func toDelivery(row deliverydb.Delivery) Delivery {
 	return Delivery{
-		ID:           row.ID,
-		TenantID:     row.TenantID,
-		EventID:      row.EventID,
-		EndpointID:   row.EndpointID,
-		Status:       Status(row.Status),
-		AttemptCount: int(row.AttemptCount),
-		EnqueuedAt:   row.EnqueuedAt,
-		CreatedAt:    row.CreatedAt,
-		UpdatedAt:    row.UpdatedAt,
-		CompletedAt:  row.CompletedAt,
+		ID:            row.ID,
+		TenantID:      row.TenantID,
+		EventID:       row.EventID,
+		EndpointID:    row.EndpointID,
+		Status:        Status(row.Status),
+		AttemptCount:  int(row.AttemptCount),
+		NextAttemptAt: row.NextAttemptAt,
+		EnqueuedAt:    row.EnqueuedAt,
+		CreatedAt:     row.CreatedAt,
+		UpdatedAt:     row.UpdatedAt,
+		CompletedAt:   row.CompletedAt,
 	}
 }
 

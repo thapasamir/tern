@@ -7,13 +7,15 @@ import (
 )
 
 type deliveryResponse struct {
-	ID           string     `json:"id"`
-	EventID      string     `json:"event_id"`
-	EndpointID   string     `json:"endpoint_id"`
-	Status       Status     `json:"status"`
-	AttemptCount int        `json:"attempt_count"`
-	CreatedAt    time.Time  `json:"created_at"`
-	CompletedAt  *time.Time `json:"completed_at"`
+	ID           string `json:"id"`
+	EventID      string `json:"event_id"`
+	EndpointID   string `json:"endpoint_id"`
+	Status       Status `json:"status"`
+	AttemptCount int    `json:"attempt_count"`
+	// NextAttemptAt is when the next retry is due, for a delivery that failed but will be retried.
+	NextAttemptAt *time.Time `json:"next_attempt_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	CompletedAt   *time.Time `json:"completed_at"`
 }
 
 type attemptResponse struct {
@@ -32,13 +34,14 @@ type deliveryDetailResponse struct {
 
 func toResponse(d Delivery) deliveryResponse {
 	return deliveryResponse{
-		ID:           d.ID.String(),
-		EventID:      d.EventID.String(),
-		EndpointID:   d.EndpointID.String(),
-		Status:       d.Status,
-		AttemptCount: d.AttemptCount,
-		CreatedAt:    d.CreatedAt.UTC(),
-		CompletedAt:  httpx.UTCPtr(d.CompletedAt),
+		ID:            d.ID.String(),
+		EventID:       d.EventID.String(),
+		EndpointID:    d.EndpointID.String(),
+		Status:        d.Status,
+		AttemptCount:  d.AttemptCount,
+		NextAttemptAt: httpx.UTCPtr(d.NextAttemptAt),
+		CreatedAt:     d.CreatedAt.UTC(),
+		CompletedAt:   httpx.UTCPtr(d.CompletedAt),
 	}
 }
 

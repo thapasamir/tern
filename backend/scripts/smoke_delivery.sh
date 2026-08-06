@@ -17,32 +17,14 @@ set +a
 export ALLOW_LOCAL_ENDPOINTS=true # endpoints point at the local receiver
 export HTTP_ADDR=":18081"         # avoid clashing with a dev server on :8080
 export DELIVERY_TIMEOUT=1s        # so the "slow endpoint" case finishes quickly
+export RETRY_SCHEDULE=none        # one attempt per delivery here; smoke_retries.sh covers retries
 
 BASE="http://localhost${HTTP_ADDR}"
 RECEIVER="localhost:19099"
 # shellcheck source=scripts/lib.sh
 source scripts/lib.sh
 
-LOG_DIR=$(mktemp -d)
-PIDS=()
-cleanup() {
-  for pid in ${PIDS[@]+"${PIDS[@]}"}; do
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true # reaps it, so the shell does not print "Terminated"
-  done
-  rm -f "$HDR_FILE"
-  rm -rf "$LOG_DIR"
-}
-trap cleanup EXIT
-
-# start NAME COMMAND [ARGS...]  -> runs a process in the background, logging to $LOG_DIR/NAME.log
-start() {
-  local name=$1
-  shift
-  "$@" >"$LOG_DIR/$name.log" 2>&1 &
-  PIDS+=($!)
-  LAST_PID=$!
-}
+trap stop_all EXIT
 
 go build -o bin/api ./cmd/api
 go build -o bin/worker ./cmd/worker
@@ -52,25 +34,6 @@ start api ./bin/api
 start worker ./bin/worker
 WORKER_PID=$LAST_PID
 wait_for_http "$BASE/healthz" || { echo "API did not start"; cat "$LOG_DIR/api.log"; exit 1; }
-
-# create_endpoint TOKEN URL EVENT_TYPES_JSON  -> sets ENDPOINT_ID and ENDPOINT_SECRET
-create_endpoint() {
-  call POST /v1/endpoints "$1" "{\"url\":\"$2\",\"event_types\":$3}"
-  ENDPOINT_ID=$(field 'd["id"]')
-  ENDPOINT_SECRET=$(field 'd["secret"]')
-}
-
-# deliveries_settled TOKEN EVENT_ID COUNT  -> true once the event has COUNT deliveries, none pending
-deliveries_settled() {
-  call GET "/v1/events/$2/deliveries?limit=100" "$1"
-  [[ $(field 'len(d["data"])') == "$3" && $(field 'sum(1 for x in d["data"] if x["status"] == "pending")') == "0" ]]
-}
-
-# delivery_to EVENT_ID ENDPOINT_ID  -> prints the id of the delivery of that event to that endpoint
-delivery_to() {
-  call GET "/v1/events/$1/deliveries?limit=100" "$KEY"
-  field "next((x['id'] for x in d['data'] if x['endpoint_id'] == '$2'), 'none')"
-}
 
 # expect_delivery NAME DELIVERY_ID WANT_STATUS WANT_HTTP_CODE  -> checks one delivery and its single attempt
 expect_delivery() {
@@ -137,11 +100,17 @@ expect "envelope: type" invoice.paid "$(field '[r for r in d if r["path"] == "/o
 expect "envelope: id" "$EVT1" "$(field '[r for r in d if r["path"] == "/ok"][0]["body"]["id"]')"
 expect "envelope: data is the payload" "{'amount': 42, 'currency': 'usd'}" "$(field '[r for r in d if r["path"] == "/ok"][0]["body"]["data"]')"
 
+echo "== an endpoint that answered 410 Gone is disabled, so later events skip it"
+call GET "/v1/endpoints/$EP_GONE" "$KEY"
+expect "the 410 endpoint was disabled by its own answer" disabled "$(field 'd["status"]')"
+
 echo "== event type filtering"
 call POST /v1/events "$KEY" '{"type":"user.created","payload":{"id":7}}'
 EVT2=$(field 'd["id"]')
-poll 30 deliveries_settled "$KEY" "$EVT2" 4 || true
-expect "user.created skips the invoice-only endpoint" 0 "$(deliveries_settled "$KEY" "$EVT2" 4 && echo 0 || echo 1)"
+# Three endpoints match: the ok, failing and slow ones. The invoice-only endpoint is filtered out
+# by type, and the 410 endpoint (disabled above) by its status.
+poll 30 deliveries_settled "$KEY" "$EVT2" 3 || true
+expect "user.created reaches the three matching endpoints" 0 "$(deliveries_settled "$KEY" "$EVT2" 3 && echo 0 || echo 1)"
 expect "invoice endpoint not among the deliveries" False "$(field "'$EP_INVOICE' in [x['endpoint_id'] for x in d['data']]")"
 
 echo "== idempotency"
@@ -152,8 +121,8 @@ call POST /v1/events "$KEY" '{"type":"order.created","payload":{"n":1}}' -H "Ide
 expect "replay answers 200" 200 "$CODE"
 expect "replay returns the original event" "$IDEM" "$(field 'd["id"]')"
 expect "replay is flagged" true "$(header Idempotent-Replayed)"
-poll 30 deliveries_settled "$KEY" "$IDEM" 4 || true
-expect "the event fanned out exactly once" 0 "$(deliveries_settled "$KEY" "$IDEM" 4 && echo 0 || echo 1)"
+poll 30 deliveries_settled "$KEY" "$IDEM" 3 || true
+expect "the event fanned out exactly once" 0 "$(deliveries_settled "$KEY" "$IDEM" 3 && echo 0 || echo 1)"
 call POST /v1/events "$OTHER_KEY" '{"type":"order.created","payload":{"n":1}}' -H "Idempotency-Key: order-1001"
 expect "another tenant may reuse the key" 202 "$CODE"
 

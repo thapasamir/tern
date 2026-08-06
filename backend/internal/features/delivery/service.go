@@ -17,6 +17,11 @@ const (
 	// comfortably exceed the time the API normally needs between COMMIT and the Redis write.
 	orphanGrace = 30 * time.Second
 	orphanBatch = 100
+
+	// overdueGrace is how late a delivery must be before the reconciler assumes its job was lost.
+	// Generous on purpose: a busy queue legitimately runs jobs a little late.
+	overdueGrace = 5 * time.Minute
+	overdueBatch = 500
 )
 
 // JobQueue accepts jobs to run. It is implemented by shared/queue.
@@ -70,6 +75,23 @@ func (s *Service) EnqueueOrphans(ctx context.Context) error {
 		return nil
 	}
 	s.log.Warn("queueing deliveries that never reached the queue", "count", len(deliveryIDs))
+	return s.Enqueue(ctx, deliveryIDs)
+}
+
+// ReconcileOverdue is the safety net behind the queue. Deliveries are scheduled in Redis, but
+// Postgres holds the truth about when each is due, so if Redis loses its data (a restart without
+// persistence, an eviction, a flush) the jobs vanish while the deliveries stay pending forever.
+// This finds the deliveries that are long overdue and queues them again. Enqueueing is
+// idempotent, so deliveries that are in fact still queued are unaffected.
+func (s *Service) ReconcileOverdue(ctx context.Context) error {
+	deliveryIDs, err := s.repo.ListOverdue(ctx, s.now().Add(-overdueGrace), overdueBatch)
+	if err != nil {
+		return err
+	}
+	if len(deliveryIDs) == 0 {
+		return nil
+	}
+	s.log.Warn("re-queueing deliveries that are long overdue", "count", len(deliveryIDs))
 	return s.Enqueue(ctx, deliveryIDs)
 }
 

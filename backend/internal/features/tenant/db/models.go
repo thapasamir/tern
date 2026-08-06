@@ -22,16 +22,17 @@ type ApiKey struct {
 }
 
 type Delivery struct {
-	ID           uuid.UUID
-	TenantID     uuid.UUID
-	EventID      uuid.UUID
-	EndpointID   uuid.UUID
-	Status       string
-	AttemptCount int32
-	EnqueuedAt   *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	CompletedAt  *time.Time
+	ID            uuid.UUID
+	TenantID      uuid.UUID
+	EventID       uuid.UUID
+	EndpointID    uuid.UUID
+	Status        string
+	AttemptCount  int32
+	EnqueuedAt    *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	CompletedAt   *time.Time
+	NextAttemptAt *time.Time
 }
 
 type DeliveryAttempt struct {
@@ -46,17 +47,18 @@ type DeliveryAttempt struct {
 }
 
 type Endpoint struct {
-	ID             uuid.UUID
-	TenantID       uuid.UUID
-	Url            string
-	Description    string
-	EventTypes     []string
-	Secret         string
-	Status         string
-	DisabledReason *string
-	DisabledAt     *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                  uuid.UUID
+	TenantID            uuid.UUID
+	Url                 string
+	Description         string
+	EventTypes          []string
+	Secret              string
+	Status              string
+	DisabledReason      *string
+	DisabledAt          *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	ConsecutiveFailures int32
 }
 
 type Event struct {

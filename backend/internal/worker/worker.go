@@ -17,13 +17,17 @@ type Queue interface {
 	Claim(ctx context.Context, limit int, lease time.Duration) ([]string, error)
 	// Ack marks a job as finished so its lease is not recovered.
 	Ack(ctx context.Context, jobID string) error
+	// Retry gives a job back to the queue to run again at runAt.
+	Retry(ctx context.Context, jobID string, runAt time.Time) error
 }
 
-// Processor executes one job. A nil error means the job is finished. An error means it could not
-// be done right now: the Runner then does not acknowledge it, and the queue redelivers it once
-// its lease expires.
+// Processor executes one job and says what should happen to it next:
+//   - a zero retryAt and a nil error: the job is finished and is acknowledged;
+//   - a non-zero retryAt and a nil error: the job ran but must run again at that time;
+//   - an error: the job could not be done right now. The Runner leaves it un-acknowledged, and the
+//     queue redelivers it once its lease expires.
 type Processor interface {
-	Process(ctx context.Context, jobID string) error
+	Process(ctx context.Context, jobID string) (retryAt time.Time, err error)
 }
 
 // Options configures a Runner.
@@ -126,8 +130,16 @@ func (r *Runner) run(ctx context.Context, jobID string) {
 		}
 	}()
 
-	if err := r.proc.Process(jobCtx, jobID); err != nil {
+	retryAt, err := r.proc.Process(jobCtx, jobID)
+	if err != nil {
 		r.log.Error("job failed; it will be redelivered when its lease expires", "job", jobID, "error", err)
+		return
+	}
+	if !retryAt.IsZero() {
+		if err := r.queue.Retry(jobCtx, jobID, retryAt); err != nil {
+			r.log.Error("scheduling the retry failed; the job will run again when its lease expires",
+				"job", jobID, "retry_at", retryAt, "error", err)
+		}
 		return
 	}
 	if err := r.queue.Ack(jobCtx, jobID); err != nil {

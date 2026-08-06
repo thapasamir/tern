@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,7 +38,9 @@ type SendResult struct {
 	// Body is the beginning of the response, sanitised to be valid UTF-8 without NUL bytes.
 	Body     string
 	Duration time.Duration
-	Err      error
+	// RetryAfter is how long the server asked us to wait ("Retry-After"), or zero.
+	RetryAfter time.Duration
+	Err        error
 }
 
 // Sender performs the HTTP request of a delivery attempt.
@@ -126,7 +129,36 @@ func (s *HTTPSender) Send(ctx context.Context, r SendRequest) (res SendResult) {
 
 	// A read error mid-body does not change the outcome: we already have the status code.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	return SendResult{StatusCode: resp.StatusCode, Body: sanitize(string(body))}
+	return SendResult{
+		StatusCode: resp.StatusCode,
+		Body:       sanitize(string(body)),
+		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+	}
+}
+
+// maxParsedRetryAfter keeps an absurd header value from overflowing a time.Duration. The retry
+// policy applies its own, much lower cap afterwards.
+const maxParsedRetryAfter = 30 * 24 * time.Hour
+
+// parseRetryAfter reads a Retry-After header, which is either a number of seconds or an HTTP
+// date. It returns zero when the header is absent, malformed or already in the past.
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return min(time.Duration(seconds)*time.Second, maxParsedRetryAfter)
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		if wait := at.Sub(now); wait > 0 {
+			return min(wait, maxParsedRetryAfter)
+		}
+	}
+	return 0
 }
 
 // sanitize makes arbitrary bytes from a remote server safe to store in a Postgres text column,

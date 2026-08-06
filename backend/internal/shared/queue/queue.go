@@ -7,9 +7,10 @@
 //	processing  job -> time its lease expires
 //
 // A worker Claims due jobs, which atomically moves them from ready to processing with a lease.
-// It Acks a job when done. If a worker dies mid-job nobody Acks, the lease runs out, and
-// RecoverExpired puts the job back on ready, so no job is lost. The cost is that a job can run
-// twice (a slow worker may still be running it); consumers must therefore be idempotent.
+// It Acks a job when done, or Retries it to run again later. If a worker dies mid-job nobody
+// Acks, the lease runs out, and RecoverExpired puts the job back on ready, so no job is lost.
+// The cost is that a job can run twice (a slow worker may still be running it); consumers must
+// therefore be idempotent.
 package queue
 
 import (
@@ -41,6 +42,15 @@ for _, id in ipairs(ids) do
   redis.call('ZADD', KEYS[1], 'NX', ARGV[1], id)
 end
 return #ids
+`)
+
+// retryScript moves a job from processing back to ready, scheduled for ARGV[1] (unix ms). Unlike
+// Enqueue it replaces any existing schedule: the caller knows exactly when the job should run next.
+// KEYS: ready, processing. ARGV: run-at (ms), job id.
+var retryScript = redis.NewScript(`
+redis.call('ZREM', KEYS[2], ARGV[2])
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+return 1
 `)
 
 // Redis implements the queue on a Redis server.
@@ -94,6 +104,16 @@ func (q *Redis) Claim(ctx context.Context, limit int, lease time.Duration) ([]st
 func (q *Redis) Ack(ctx context.Context, id string) error {
 	if err := q.rdb.ZRem(ctx, q.workingKey, id).Err(); err != nil {
 		return fmt.Errorf("queue: ack: %w", err)
+	}
+	return nil
+}
+
+// Retry gives a claimed job back to the queue to run again at runAt, in one atomic step. The job
+// stops being leased, so it is neither lost nor recovered early. Use it instead of Ack when a job
+// ran but must run once more later, e.g. a delivery that failed and is due for a retry.
+func (q *Redis) Retry(ctx context.Context, id string, runAt time.Time) error {
+	if err := retryScript.Run(ctx, q.rdb, []string{q.readyKey, q.workingKey}, millis(runAt), id).Err(); err != nil {
+		return fmt.Errorf("queue: retry: %w", err)
 	}
 	return nil
 }

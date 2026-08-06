@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/samirthapa/webhook-platform/internal/features/delivery"
+	"github.com/samirthapa/webhook-platform/internal/features/endpoint"
 	"github.com/samirthapa/webhook-platform/internal/shared/cache"
 	"github.com/samirthapa/webhook-platform/internal/shared/config"
 	"github.com/samirthapa/webhook-platform/internal/shared/database"
 	"github.com/samirthapa/webhook-platform/internal/shared/logger"
 	"github.com/samirthapa/webhook-platform/internal/shared/queue"
+	"github.com/samirthapa/webhook-platform/internal/shared/urlguard"
 	"github.com/samirthapa/webhook-platform/internal/worker"
 )
 
@@ -62,7 +64,15 @@ func run() error {
 	jobs := queue.New(rdb, delivery.QueueName)
 	repo := delivery.NewRepository(pool)
 	deliveries := delivery.NewService(repo, jobs)
-	processor := delivery.NewProcessor(repo, delivery.NewHTTPSender(cfg.AllowLocalEndpoints, cfg.DeliveryTimeout))
+	// The endpoint feature owns an endpoint's health; the processor reports each attempt to it.
+	endpoints := endpoint.NewService(endpoint.NewRepository(pool), urlguard.NewValidator(cfg.AllowLocalEndpoints))
+	retry := delivery.NewRetryPolicy(cfg.RetrySchedule)
+	processor := delivery.NewProcessor(
+		repo,
+		delivery.NewHTTPSender(cfg.AllowLocalEndpoints, cfg.DeliveryTimeout),
+		endpoints,
+		delivery.ProcessorConfig{Retry: retry, AutoDisableAfter: cfg.AutoDisableAfter},
+	)
 	if cfg.AllowLocalEndpoints {
 		log.Warn("ALLOW_LOCAL_ENDPOINTS is on: deliveries to private addresses are allowed (development only)")
 	}
@@ -80,7 +90,12 @@ func run() error {
 
 	var wg sync.WaitGroup
 
-	log.Info("worker started", "concurrency", cfg.WorkerConcurrency, "delivery_timeout", cfg.DeliveryTimeout)
+	log.Info("worker started",
+		"concurrency", cfg.WorkerConcurrency,
+		"delivery_timeout", cfg.DeliveryTimeout,
+		"max_attempts", retry.MaxAttempts(),
+		"auto_disable_after", cfg.AutoDisableAfter,
+	)
 	wg.Go(func() { runner.Run(ctx) })
 
 	// Jobs whose worker died hold a lease that eventually expires; hand them back to the queue.
@@ -96,6 +111,11 @@ func run() error {
 	// Deliveries committed to Postgres but never queued (crash or Redis outage in between).
 	wg.Go(func() {
 		worker.Every(ctx, log, sweepInterval, "enqueue orphaned deliveries", deliveries.EnqueueOrphans)
+	})
+	// Deliveries whose queue job vanished, e.g. because Redis lost its data: Postgres knows
+	// when each is due, so the queue can be rebuilt from it.
+	wg.Go(func() {
+		worker.Every(ctx, log, cfg.ReconcileInterval, "reconcile overdue deliveries", deliveries.ReconcileOverdue)
 	})
 
 	<-ctx.Done()

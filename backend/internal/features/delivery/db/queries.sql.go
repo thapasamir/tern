@@ -14,10 +14,11 @@ import (
 
 const completeDelivery = `-- name: CompleteDelivery :one
 UPDATE deliveries
-SET status        = $1,
-    attempt_count = attempt_count + 1,
-    completed_at  = $2::timestamptz,
-    updated_at    = $2::timestamptz
+SET status          = $1,
+    attempt_count   = attempt_count + 1,
+    next_attempt_at = NULL,
+    completed_at    = $2::timestamptz,
+    updated_at      = $2::timestamptz
 WHERE id = $3 AND status = 'pending'
 RETURNING attempt_count
 `
@@ -37,8 +38,40 @@ func (q *Queries) CompleteDelivery(ctx context.Context, arg CompleteDeliveryPara
 	return attempt_count, err
 }
 
+const failPendingForEndpoint = `-- name: FailPendingForEndpoint :execrows
+WITH failed AS (
+    UPDATE deliveries
+    SET status          = 'failed',
+        attempt_count   = attempt_count + 1,
+        next_attempt_at = NULL,
+        completed_at    = $2::timestamptz,
+        updated_at      = $2::timestamptz
+    WHERE endpoint_id = $3 AND status = 'pending'
+    RETURNING id, attempt_count
+)
+INSERT INTO delivery_attempts (id, delivery_id, attempt_number, error, duration_ms, started_at)
+SELECT gen_random_uuid(), failed.id, failed.attempt_count, $1::text, 0, $2::timestamptz
+FROM failed
+`
+
+type FailPendingForEndpointParams struct {
+	Reason     string
+	At         time.Time
+	EndpointID uuid.UUID
+}
+
+// Fails every pending delivery of an endpoint that has just been disabled, leaving an attempt
+// row behind so each delivery's log says why it ended. Returns how many deliveries it failed.
+func (q *Queries) FailPendingForEndpoint(ctx context.Context, arg FailPendingForEndpointParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failPendingForEndpoint, arg.Reason, arg.At, arg.EndpointID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getDelivery = `-- name: GetDelivery :one
-SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at FROM deliveries
+SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at FROM deliveries
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -61,6 +94,7 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (Deliv
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CompletedAt,
+		&i.NextAttemptAt,
 	)
 	return i, err
 }
@@ -69,6 +103,9 @@ const getDeliveryWork = `-- name: GetDeliveryWork :one
 SELECT d.id            AS delivery_id,
        d.tenant_id     AS tenant_id,
        d.status        AS delivery_status,
+       d.attempt_count AS attempt_count,
+       d.next_attempt_at AS next_attempt_at,
+       d.endpoint_id   AS endpoint_id,
        d.event_id      AS event_id,
        e.type          AS event_type,
        e.payload       AS event_payload,
@@ -86,6 +123,9 @@ type GetDeliveryWorkRow struct {
 	DeliveryID     uuid.UUID
 	TenantID       uuid.UUID
 	DeliveryStatus string
+	AttemptCount   int32
+	NextAttemptAt  *time.Time
+	EndpointID     uuid.UUID
 	EventID        uuid.UUID
 	EventType      string
 	EventPayload   []byte
@@ -104,6 +144,9 @@ func (q *Queries) GetDeliveryWork(ctx context.Context, id uuid.UUID) (GetDeliver
 		&i.DeliveryID,
 		&i.TenantID,
 		&i.DeliveryStatus,
+		&i.AttemptCount,
+		&i.NextAttemptAt,
+		&i.EndpointID,
 		&i.EventID,
 		&i.EventType,
 		&i.EventPayload,
@@ -181,7 +224,7 @@ func (q *Queries) ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Del
 }
 
 const listDeliveriesByEvent = `-- name: ListDeliveriesByEvent :many
-SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at FROM deliveries
+SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at FROM deliveries
 WHERE tenant_id = $1
   AND event_id = $2
   AND id < $3
@@ -222,10 +265,49 @@ func (q *Queries) ListDeliveriesByEvent(ctx context.Context, arg ListDeliveriesB
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CompletedAt,
+			&i.NextAttemptAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOverdueDeliveries = `-- name: ListOverdueDeliveries :many
+SELECT id FROM deliveries
+WHERE status = 'pending'
+  AND COALESCE(next_attempt_at, created_at) < $1::timestamptz
+  AND updated_at < $1::timestamptz
+ORDER BY COALESCE(next_attempt_at, created_at)
+LIMIT $2
+`
+
+type ListOverdueDeliveriesParams struct {
+	DueBefore time.Time
+	RowLimit  int32
+}
+
+// Pending deliveries that are overdue: their job should have run but evidently has not, for
+// instance because Redis lost its data. The reconciler queues them again.
+// The updated_at condition keeps one batch from being picked again and again: queueing a delivery
+// touches it, so the reconciler moves on to the next ones while the queue works through these.
+func (q *Queries) ListOverdueDeliveries(ctx context.Context, arg ListOverdueDeliveriesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listOverdueDeliveries, arg.DueBefore, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -268,8 +350,8 @@ func (q *Queries) ListUnenqueuedDeliveries(ctx context.Context, arg ListUnenqueu
 
 const markDeliveriesEnqueued = `-- name: MarkDeliveriesEnqueued :exec
 UPDATE deliveries
-SET enqueued_at = $1::timestamptz, updated_at = $1::timestamptz
-WHERE id = ANY($2::uuid[]) AND enqueued_at IS NULL
+SET enqueued_at = COALESCE(enqueued_at, $1::timestamptz), updated_at = $1::timestamptz
+WHERE id = ANY($2::uuid[])
 `
 
 type MarkDeliveriesEnqueuedParams struct {
@@ -277,7 +359,32 @@ type MarkDeliveriesEnqueuedParams struct {
 	Ids []uuid.UUID
 }
 
+// Records that the deliveries are in the queue. Safe to repeat: the first enqueue time is kept.
 func (q *Queries) MarkDeliveriesEnqueued(ctx context.Context, arg MarkDeliveriesEnqueuedParams) error {
 	_, err := q.db.Exec(ctx, markDeliveriesEnqueued, arg.At, arg.Ids)
 	return err
+}
+
+const scheduleRetry = `-- name: ScheduleRetry :one
+UPDATE deliveries
+SET attempt_count   = attempt_count + 1,
+    next_attempt_at = $1::timestamptz,
+    updated_at      = $2::timestamptz
+WHERE id = $3 AND status = 'pending'
+RETURNING attempt_count
+`
+
+type ScheduleRetryParams struct {
+	NextAttemptAt time.Time
+	At            time.Time
+	ID            uuid.UUID
+}
+
+// Records a failed attempt that will be retried: the delivery stays pending, with its next due time.
+// Like CompleteDelivery, matching no row means another worker already handled it.
+func (q *Queries) ScheduleRetry(ctx context.Context, arg ScheduleRetryParams) (int32, error) {
+	row := q.db.QueryRow(ctx, scheduleRetry, arg.NextAttemptAt, arg.At, arg.ID)
+	var attempt_count int32
+	err := row.Scan(&attempt_count)
+	return attempt_count, err
 }

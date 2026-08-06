@@ -30,6 +30,37 @@ func (q *Queries) DeleteEndpoint(ctx context.Context, arg DeleteEndpointParams) 
 	return result.RowsAffected(), nil
 }
 
+const disableActiveEndpoint = `-- name: DisableActiveEndpoint :execrows
+UPDATE endpoints
+SET status          = 'disabled',
+    disabled_reason = $1::text,
+    disabled_at     = $2::timestamptz,
+    updated_at      = $2::timestamptz
+WHERE id = $3 AND tenant_id = $4 AND status = 'active'
+`
+
+type DisableActiveEndpointParams struct {
+	Reason   string
+	At       time.Time
+	ID       uuid.UUID
+	TenantID uuid.UUID
+}
+
+// Disables an endpoint only if it is still active, so that exactly one caller learns that it
+// was the one to disable it (rows affected is 1) when several attempts fail at the same time.
+func (q *Queries) DisableActiveEndpoint(ctx context.Context, arg DisableActiveEndpointParams) (int64, error) {
+	result, err := q.db.Exec(ctx, disableActiveEndpoint,
+		arg.Reason,
+		arg.At,
+		arg.ID,
+		arg.TenantID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const disableEndpoint = `-- name: DisableEndpoint :execrows
 UPDATE endpoints
 SET status          = 'disabled',
@@ -61,10 +92,11 @@ func (q *Queries) DisableEndpoint(ctx context.Context, arg DisableEndpointParams
 
 const enableEndpoint = `-- name: EnableEndpoint :execrows
 UPDATE endpoints
-SET status          = 'active',
-    disabled_reason = NULL,
-    disabled_at     = NULL,
-    updated_at      = $1
+SET status               = 'active',
+    disabled_reason      = NULL,
+    disabled_at          = NULL,
+    consecutive_failures = 0, -- a re-enabled endpoint starts with a clean slate
+    updated_at           = $1
 WHERE id = $2 AND tenant_id = $3
 `
 
@@ -83,7 +115,7 @@ func (q *Queries) EnableEndpoint(ctx context.Context, arg EnableEndpointParams) 
 }
 
 const getEndpoint = `-- name: GetEndpoint :one
-SELECT id, tenant_id, url, description, event_types, secret, status, disabled_reason, disabled_at, created_at, updated_at FROM endpoints
+SELECT id, tenant_id, url, description, event_types, secret, status, disabled_reason, disabled_at, created_at, updated_at, consecutive_failures FROM endpoints
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -107,8 +139,31 @@ func (q *Queries) GetEndpoint(ctx context.Context, arg GetEndpointParams) (Endpo
 		&i.DisabledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConsecutiveFailures,
 	)
 	return i, err
+}
+
+const incrementEndpointFailures = `-- name: IncrementEndpointFailures :one
+
+UPDATE endpoints
+SET consecutive_failures = consecutive_failures + 1
+WHERE id = $1 AND tenant_id = $2
+RETURNING consecutive_failures
+`
+
+type IncrementEndpointFailuresParams struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+}
+
+// Endpoint health, driven by the delivery worker. Counting is not a configuration change, so
+// updated_at is left alone.
+func (q *Queries) IncrementEndpointFailures(ctx context.Context, arg IncrementEndpointFailuresParams) (int32, error) {
+	row := q.db.QueryRow(ctx, incrementEndpointFailures, arg.ID, arg.TenantID)
+	var consecutive_failures int32
+	err := row.Scan(&consecutive_failures)
+	return consecutive_failures, err
 }
 
 const insertEndpoint = `-- name: InsertEndpoint :exec
@@ -146,7 +201,7 @@ func (q *Queries) InsertEndpoint(ctx context.Context, arg InsertEndpointParams) 
 }
 
 const listEndpoints = `-- name: ListEndpoints :many
-SELECT id, tenant_id, url, description, event_types, secret, status, disabled_reason, disabled_at, created_at, updated_at FROM endpoints
+SELECT id, tenant_id, url, description, event_types, secret, status, disabled_reason, disabled_at, created_at, updated_at, consecutive_failures FROM endpoints
 WHERE tenant_id = $1 AND id < $2
 ORDER BY id DESC
 LIMIT $3
@@ -180,6 +235,7 @@ func (q *Queries) ListEndpoints(ctx context.Context, arg ListEndpointsParams) ([
 			&i.DisabledAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ConsecutiveFailures,
 		); err != nil {
 			return nil, err
 		}
@@ -189,6 +245,23 @@ func (q *Queries) ListEndpoints(ctx context.Context, arg ListEndpointsParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const resetEndpointFailures = `-- name: ResetEndpointFailures :exec
+UPDATE endpoints
+SET consecutive_failures = 0
+WHERE id = $1 AND tenant_id = $2 AND consecutive_failures > 0
+`
+
+type ResetEndpointFailuresParams struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+}
+
+// Matching no row is fine here: it just means the counter was already zero.
+func (q *Queries) ResetEndpointFailures(ctx context.Context, arg ResetEndpointFailuresParams) error {
+	_, err := q.db.Exec(ctx, resetEndpointFailures, arg.ID, arg.TenantID)
+	return err
 }
 
 const updateEndpoint = `-- name: UpdateEndpoint :execrows

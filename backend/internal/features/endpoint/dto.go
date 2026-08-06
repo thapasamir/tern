@@ -29,8 +29,10 @@ type endpointResponse struct {
 	Status         Status     `json:"status"`
 	DisabledReason *string    `json:"disabled_reason"`
 	DisabledAt     *time.Time `json:"disabled_at"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	// ConsecutiveFailures is the current streak of failed delivery attempts.
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // endpointWithSecretResponse is returned only when a secret is created or rotated.
@@ -45,15 +47,16 @@ func toResponse(e Endpoint) endpointResponse {
 		eventTypes = []string{} // JSON [] rather than null
 	}
 	return endpointResponse{
-		ID:             e.ID.String(),
-		URL:            e.URL,
-		Description:    e.Description,
-		EventTypes:     eventTypes,
-		Status:         e.Status,
-		DisabledReason: e.DisabledReason,
-		DisabledAt:     httpx.UTCPtr(e.DisabledAt),
-		CreatedAt:      e.CreatedAt.UTC(),
-		UpdatedAt:      e.UpdatedAt.UTC(),
+		ID:                  e.ID.String(),
+		URL:                 e.URL,
+		Description:         e.Description,
+		EventTypes:          eventTypes,
+		Status:              e.Status,
+		DisabledReason:      e.DisabledReason,
+		DisabledAt:          httpx.UTCPtr(e.DisabledAt),
+		ConsecutiveFailures: e.ConsecutiveFailures,
+		CreatedAt:           e.CreatedAt.UTC(),
+		UpdatedAt:           e.UpdatedAt.UTC(),
 	}
 }
 

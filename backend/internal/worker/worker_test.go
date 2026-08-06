@@ -19,6 +19,13 @@ type fakeQueue struct {
 	acked     []string
 	limits    []int // the limit of each Claim call
 	claimErrs int   // fail this many Claim calls first
+	retried   []retryCall
+	retryErr  error
+}
+
+type retryCall struct {
+	id string
+	at time.Time
 }
 
 func (q *fakeQueue) Claim(_ context.Context, limit int, _ time.Duration) ([]string, error) {
@@ -42,6 +49,19 @@ func (q *fakeQueue) Ack(_ context.Context, id string) error {
 	return nil
 }
 
+func (q *fakeQueue) Retry(_ context.Context, id string, runAt time.Time) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.retried = append(q.retried, retryCall{id, runAt})
+	return q.retryErr
+}
+
+func (q *fakeQueue) retriedJobs() []retryCall {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return slices.Clone(q.retried)
+}
+
 func (q *fakeQueue) ackedJobs() []string {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -56,9 +76,17 @@ func (q *fakeQueue) maxLimit() int {
 	return slices.Max(append([]int{0}, q.limits...))
 }
 
+// processorFunc adapts a plain function to Processor for jobs that finish (no retry).
 type processorFunc func(ctx context.Context, jobID string) error
 
-func (f processorFunc) Process(ctx context.Context, jobID string) error { return f(ctx, jobID) }
+func (f processorFunc) Process(ctx context.Context, jobID string) (time.Time, error) {
+	return time.Time{}, f(ctx, jobID)
+}
+
+// retryingProcessor asks for every job to be run again at the given time.
+type retryingProcessor struct{ at time.Time }
+
+func (p retryingProcessor) Process(context.Context, string) (time.Time, error) { return p.at, nil }
 
 func testOptions(concurrency int) Options {
 	return Options{Concurrency: concurrency, PollInterval: 5 * time.Millisecond, JobTimeout: 5 * time.Second, Lease: 30 * time.Second}
@@ -131,6 +159,33 @@ func TestRunner_DoesNotAckJobsThatFailOrPanic(t *testing.T) {
 	waitFor(t, "the healthy jobs to be acked", func() bool { return len(q.ackedJobs()) == 2 })
 	if got := q.ackedJobs(); !slices.Equal(got, []string{"ok-1", "ok-2"}) {
 		t.Fatalf("acked %v; failed and panicking jobs must stay un-acked so the queue redelivers them", got)
+	}
+}
+
+func TestRunner_RequeuesJobsThatAskForARetry(t *testing.T) {
+	q := &fakeQueue{pending: []string{"a", "b"}}
+	at := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	start(t, q, retryingProcessor{at: at}, testOptions(2))
+
+	waitFor(t, "both jobs to be rescheduled", func() bool { return len(q.retriedJobs()) == 2 })
+	for _, call := range q.retriedJobs() {
+		if !call.at.Equal(at) {
+			t.Errorf("job %s retried at %v, want %v", call.id, call.at, at)
+		}
+	}
+	if len(q.ackedJobs()) != 0 {
+		t.Fatalf("acked %v; a job that asked for a retry is not finished", q.ackedJobs())
+	}
+}
+
+func TestRunner_ASchedulingFailureDoesNotAckTheJob(t *testing.T) {
+	q := &fakeQueue{pending: []string{"a"}, retryErr: errors.New("redis: connection refused")}
+	start(t, q, retryingProcessor{at: time.Now().Add(time.Hour)}, testOptions(1))
+
+	waitFor(t, "the retry to be attempted", func() bool { return len(q.retriedJobs()) == 1 })
+	time.Sleep(20 * time.Millisecond)
+	if len(q.ackedJobs()) != 0 {
+		t.Fatal("the job was acked although its retry could not be scheduled; it would be lost")
 	}
 }
 

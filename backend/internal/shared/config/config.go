@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,15 @@ type Config struct {
 	WorkerConcurrency int
 	// DeliveryTimeout bounds a single HTTP request to a customer's endpoint.
 	DeliveryTimeout time.Duration
+
+	// RetrySchedule is the delay after each failed delivery attempt: the first entry follows the
+	// first failure, the second the second, and so on. A delivery gets len(RetrySchedule)+1
+	// attempts in all, then fails for good. Empty means no retries.
+	RetrySchedule []time.Duration
+	// AutoDisableAfter is how many failed attempts in a row disable an endpoint.
+	AutoDisableAfter int
+	// ReconcileInterval is how often the worker looks for deliveries whose queue job was lost.
+	ReconcileInterval time.Duration
 }
 
 const (
@@ -35,7 +45,22 @@ const (
 	maxWorkerCount     = 1000
 	minDeliveryTimeout = time.Second
 	maxDeliveryTimeout = 2 * time.Minute
+
+	maxRetries            = 20
+	maxRetryDelay         = 7 * 24 * time.Hour
+	maxAutoDisableAfter   = 10_000
+	minReconcileInterval  = time.Second
+	maxReconcileInterval  = time.Hour
+	noRetriesValue        = "none"
+	defaultAutoDisable    = 20
+	defaultReconcileEvery = 5 * time.Minute
 )
+
+// defaultRetrySchedule gives a delivery 8 attempts over roughly 28 hours, which rides out most
+// outages: a quick retry for blips, then progressively longer waits for real downtime.
+var defaultRetrySchedule = []time.Duration{
+	5 * time.Second, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 5 * time.Hour, 10 * time.Hour, 10 * time.Hour,
+}
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
 
@@ -61,6 +86,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DeliveryTimeout, err = envDuration("DELIVERY_TIMEOUT", 10*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.RetrySchedule, err = envDurationList("RETRY_SCHEDULE", defaultRetrySchedule); err != nil {
+		return Config{}, err
+	}
+	if cfg.AutoDisableAfter, err = envInt("AUTO_DISABLE_AFTER", defaultAutoDisable); err != nil {
+		return Config{}, err
+	}
+	if cfg.ReconcileInterval, err = envDuration("RECONCILE_INTERVAL", defaultReconcileEvery); err != nil {
 		return Config{}, err
 	}
 
@@ -94,6 +128,17 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: WORKER_CONCURRENCY must be between 1 and %d", maxWorkerCount)
 	case c.DeliveryTimeout < minDeliveryTimeout || c.DeliveryTimeout > maxDeliveryTimeout:
 		return fmt.Errorf("config: DELIVERY_TIMEOUT must be between %s and %s", minDeliveryTimeout, maxDeliveryTimeout)
+	case len(c.RetrySchedule) > maxRetries:
+		return fmt.Errorf("config: RETRY_SCHEDULE may list at most %d delays", maxRetries)
+	case c.AutoDisableAfter < 1 || c.AutoDisableAfter > maxAutoDisableAfter:
+		return fmt.Errorf("config: AUTO_DISABLE_AFTER must be between 1 and %d", maxAutoDisableAfter)
+	case c.ReconcileInterval < minReconcileInterval || c.ReconcileInterval > maxReconcileInterval:
+		return fmt.Errorf("config: RECONCILE_INTERVAL must be between %s and %s", minReconcileInterval, maxReconcileInterval)
+	}
+	for _, d := range c.RetrySchedule {
+		if d <= 0 || d > maxRetryDelay {
+			return fmt.Errorf("config: every RETRY_SCHEDULE delay must be between 0 and %s", maxRetryDelay)
+		}
 	}
 	return nil
 }
@@ -139,4 +184,25 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("config: invalid %s: %w", key, err)
 	}
 	return v, nil
+}
+
+// envDurationList reads a comma-separated list of durations such as "5s,5m,1h". The value "none"
+// means an empty list; an unset variable means fallback.
+func envDurationList(key string, fallback []time.Duration) ([]time.Duration, error) {
+	raw := os.Getenv(key)
+	switch raw {
+	case "":
+		return slices.Clone(fallback), nil
+	case noRetriesValue:
+		return nil, nil
+	}
+	var out []time.Duration
+	for _, part := range strings.Split(raw, ",") {
+		d, err := time.ParseDuration(strings.TrimSpace(part))
+		if err != nil {
+			return nil, fmt.Errorf("config: invalid %s: %w", key, err)
+		}
+		out = append(out, d)
+	}
+	return out, nil
 }

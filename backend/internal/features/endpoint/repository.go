@@ -30,6 +30,15 @@ type Repository interface {
 	Disable(ctx context.Context, tenantID, id uuid.UUID, reason string, at time.Time) error
 	Enable(ctx context.Context, tenantID, id uuid.UUID, at time.Time) error
 	Delete(ctx context.Context, tenantID, id uuid.UUID) error
+
+	// IncrementFailures adds one to the endpoint's consecutive-failure count and returns the new count.
+	IncrementFailures(ctx context.Context, tenantID, id uuid.UUID) (int, error)
+	// ResetFailures sets the count back to zero. It is not an error if it already was zero.
+	ResetFailures(ctx context.Context, tenantID, id uuid.UUID) error
+	// DisableIfActive disables the endpoint only if it is currently active, and reports whether
+	// it did. An endpoint that is already disabled (or gone) yields false, so of several callers
+	// racing to disable the same endpoint exactly one gets true.
+	DisableIfActive(ctx context.Context, tenantID, id uuid.UUID, reason string, at time.Time) (bool, error)
 }
 
 // pgRepository implements Repository on top of the sqlc-generated queries.
@@ -120,19 +129,45 @@ func (r *pgRepository) Delete(ctx context.Context, tenantID, id uuid.UUID) error
 	return database.RequireRow(n, err, "delete endpoint")
 }
 
+func (r *pgRepository) IncrementFailures(ctx context.Context, tenantID, id uuid.UUID) (int, error) {
+	n, err := r.q.IncrementEndpointFailures(ctx, endpointdb.IncrementEndpointFailuresParams{ID: id, TenantID: tenantID})
+	if err != nil {
+		return 0, database.WrapErr(err, "increment endpoint failures")
+	}
+	return int(n), nil
+}
+
+func (r *pgRepository) ResetFailures(ctx context.Context, tenantID, id uuid.UUID) error {
+	if err := r.q.ResetEndpointFailures(ctx, endpointdb.ResetEndpointFailuresParams{ID: id, TenantID: tenantID}); err != nil {
+		return database.WrapErr(err, "reset endpoint failures")
+	}
+	return nil
+}
+
+func (r *pgRepository) DisableIfActive(ctx context.Context, tenantID, id uuid.UUID, reason string, at time.Time) (bool, error) {
+	n, err := r.q.DisableActiveEndpoint(ctx, endpointdb.DisableActiveEndpointParams{
+		Reason: reason, At: at, ID: id, TenantID: tenantID,
+	})
+	if err != nil {
+		return false, database.WrapErr(err, "disable endpoint if active")
+	}
+	return n == 1, nil
+}
+
 func toDomain(row endpointdb.Endpoint) Endpoint {
 	return Endpoint{
-		ID:             row.ID,
-		TenantID:       row.TenantID,
-		URL:            row.URL,
-		Description:    row.Description,
-		EventTypes:     row.EventTypes,
-		Secret:         row.Secret,
-		Status:         Status(row.Status),
-		DisabledReason: row.DisabledReason,
-		DisabledAt:     row.DisabledAt,
-		CreatedAt:      row.CreatedAt,
-		UpdatedAt:      row.UpdatedAt,
+		ID:                  row.ID,
+		TenantID:            row.TenantID,
+		URL:                 row.URL,
+		Description:         row.Description,
+		EventTypes:          row.EventTypes,
+		Secret:              row.Secret,
+		Status:              Status(row.Status),
+		DisabledReason:      row.DisabledReason,
+		DisabledAt:          row.DisabledAt,
+		ConsecutiveFailures: int(row.ConsecutiveFailures),
+		CreatedAt:           row.CreatedAt,
+		UpdatedAt:           row.UpdatedAt,
 	}
 }
 

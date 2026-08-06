@@ -177,6 +177,35 @@ func (s *Service) Enable(ctx context.Context, tenantID, id uuid.UUID) (Endpoint,
 	return s.Get(ctx, tenantID, id)
 }
 
+// RecordSuccess clears the endpoint's failure streak after a successful delivery.
+func (s *Service) RecordSuccess(ctx context.Context, tenantID, id uuid.UUID) error {
+	return s.repo.ResetFailures(ctx, tenantID, id)
+}
+
+// RecordFailure counts a failed delivery attempt and disables the endpoint once it has failed
+// disableAfter times in a row. It reports whether this call disabled the endpoint.
+// An endpoint deleted in the meantime is not an error: there is nothing left to track.
+func (s *Service) RecordFailure(ctx context.Context, tenantID, id uuid.UUID, disableAfter int) (disabled bool, err error) {
+	failures, err := s.repo.IncrementFailures(ctx, tenantID, id)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if failures < disableAfter {
+		return false, nil
+	}
+	reason := fmt.Sprintf("disabled automatically after %d consecutive failed attempts", failures)
+	return s.DisableIfActive(ctx, tenantID, id, reason)
+}
+
+// DisableIfActive disables the endpoint, recording why, unless it is already disabled. It reports
+// whether this call did the disabling, which lets the caller act on the transition exactly once.
+func (s *Service) DisableIfActive(ctx context.Context, tenantID, id uuid.UUID, reason string) (bool, error) {
+	return s.repo.DisableIfActive(ctx, tenantID, id, reason, s.now().UTC())
+}
+
 func (s *Service) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	if err := s.repo.Delete(ctx, tenantID, id); err != nil {
 		return mapRepoError(err)

@@ -23,7 +23,13 @@ type fakeRepo struct {
 	markErr      error
 	listUnenqErr error
 
+	failPendingErr error
+	overdue        []uuid.UUID
+	overdueErr     error
+
 	recorded         []AttemptRecord
+	failedPending    []failPendingCall
+	overdueCutoff    time.Time
 	marked           [][]uuid.UUID
 	markedAt         []time.Time
 	unenqueuedCutoff time.Time
@@ -54,6 +60,24 @@ func (f *fakeRepo) RecordAttempt(_ context.Context, rec AttemptRecord) (bool, er
 	}
 	f.recorded = append(f.recorded, rec)
 	return !f.notRecorded, nil
+}
+
+func (f *fakeRepo) FailPendingForEndpoint(_ context.Context, endpointID uuid.UUID, reason string, _ time.Time) (int64, error) {
+	if f.failPendingErr != nil {
+		return 0, f.failPendingErr
+	}
+	f.failedPending = append(f.failedPending, failPendingCall{endpointID, reason})
+	return 1, nil
+}
+
+func (f *fakeRepo) ListOverdue(_ context.Context, dueBefore time.Time, _ int) ([]uuid.UUID, error) {
+	f.overdueCutoff = dueBefore
+	return f.overdue, f.overdueErr
+}
+
+type failPendingCall struct {
+	endpointID uuid.UUID
+	reason     string
 }
 
 func (f *fakeRepo) Get(_ context.Context, tenantID, id uuid.UUID) (Delivery, error) {
@@ -120,4 +144,36 @@ type fakeSender struct {
 func (f *fakeSender) Send(_ context.Context, req SendRequest) SendResult {
 	f.requests = append(f.requests, req)
 	return f.result
+}
+
+// fakeHealth records what the processor told the endpoint feature and answers as configured.
+type fakeHealth struct {
+	successes []uuid.UUID
+	failures  []healthCall
+	disables  []healthCall
+
+	disableOnFailure bool // RecordFailure reports that it disabled the endpoint
+	disableOnDisable bool // DisableIfActive reports that it disabled the endpoint
+	err              error
+}
+
+type healthCall struct {
+	endpointID   uuid.UUID
+	disableAfter int
+	reason       string
+}
+
+func (f *fakeHealth) RecordSuccess(_ context.Context, _, endpointID uuid.UUID) error {
+	f.successes = append(f.successes, endpointID)
+	return f.err
+}
+
+func (f *fakeHealth) RecordFailure(_ context.Context, _, endpointID uuid.UUID, disableAfter int) (bool, error) {
+	f.failures = append(f.failures, healthCall{endpointID: endpointID, disableAfter: disableAfter})
+	return f.disableOnFailure, f.err
+}
+
+func (f *fakeHealth) DisableIfActive(_ context.Context, _, endpointID uuid.UUID, reason string) (bool, error) {
+	f.disables = append(f.disables, healthCall{endpointID: endpointID, reason: reason})
+	return f.disableOnDisable, f.err
 }

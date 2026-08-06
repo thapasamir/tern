@@ -29,6 +29,9 @@ type Endpoint struct {
 	Status         Status
 	DisabledReason *string
 	DisabledAt     *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// ConsecutiveFailures counts failed delivery attempts since the endpoint last succeeded or was
+	// re-enabled. Reaching the configured limit disables the endpoint.
+	ConsecutiveFailures int
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
