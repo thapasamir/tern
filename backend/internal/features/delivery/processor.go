@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/ptr"
-	"github.com/samirthapa/webhook-platform/internal/shared/signing"
+	"github.com/samirthapa/tern/internal/shared/ptr"
+	"github.com/samirthapa/tern/internal/shared/signing"
 )
 
 const (

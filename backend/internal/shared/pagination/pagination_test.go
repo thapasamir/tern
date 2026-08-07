@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/apperror"
 )
 
 func TestParse(t *testing.T) {

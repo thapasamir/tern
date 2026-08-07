@@ -10,11 +10,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
-	"github.com/samirthapa/webhook-platform/internal/shared/ptr"
-	"github.com/samirthapa/webhook-platform/internal/shared/signing"
-	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/pagination"
+	"github.com/samirthapa/tern/internal/shared/ptr"
+	"github.com/samirthapa/tern/internal/shared/signing"
+	"github.com/samirthapa/tern/internal/shared/testutil"
 )
 
 // fakeRepo is an in-memory, tenant-scoped Repository.

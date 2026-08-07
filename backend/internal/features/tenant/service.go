@@ -13,14 +13,14 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/ids"
-	"github.com/samirthapa/webhook-platform/internal/shared/validate"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/ids"
+	"github.com/samirthapa/tern/internal/shared/validate"
 )
 
 const (
-	keyPrefix       = "whk_"
-	displayPrefixN  = 6 // secret characters shown after "whk_" in listings
+	keyPrefix       = "tern_"
+	displayPrefixN  = 6 // secret characters shown after "tern_" in listings
 	maxNameLen      = 100
 	touchInterval   = time.Minute // throttle for last_used_at writes
 	secretByteCount = 32

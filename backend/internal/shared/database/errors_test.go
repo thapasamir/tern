@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/apperror"
 )
 
 func TestWrapErr(t *testing.T) {

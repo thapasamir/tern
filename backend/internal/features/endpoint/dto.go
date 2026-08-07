@@ -3,7 +3,7 @@ package endpoint
 import (
 	"time"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/httpx"
 )
 
 type createEndpointRequest struct {

@@ -13,17 +13,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/samirthapa/webhook-platform/internal/features/delivery"
-	"github.com/samirthapa/webhook-platform/internal/features/endpoint"
-	"github.com/samirthapa/webhook-platform/internal/features/event"
-	"github.com/samirthapa/webhook-platform/internal/features/tenant"
-	"github.com/samirthapa/webhook-platform/internal/shared/cache"
-	"github.com/samirthapa/webhook-platform/internal/shared/config"
-	"github.com/samirthapa/webhook-platform/internal/shared/database"
-	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
-	"github.com/samirthapa/webhook-platform/internal/shared/logger"
-	"github.com/samirthapa/webhook-platform/internal/shared/queue"
-	"github.com/samirthapa/webhook-platform/internal/shared/urlguard"
+	"github.com/samirthapa/tern/internal/features/delivery"
+	"github.com/samirthapa/tern/internal/features/endpoint"
+	"github.com/samirthapa/tern/internal/features/event"
+	"github.com/samirthapa/tern/internal/features/tenant"
+	"github.com/samirthapa/tern/internal/shared/cache"
+	"github.com/samirthapa/tern/internal/shared/config"
+	"github.com/samirthapa/tern/internal/shared/database"
+	"github.com/samirthapa/tern/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/logger"
+	"github.com/samirthapa/tern/internal/shared/queue"
+	"github.com/samirthapa/tern/internal/shared/urlguard"
 )
 
 func main() {

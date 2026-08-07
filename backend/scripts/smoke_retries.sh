@@ -187,7 +187,7 @@ poll 20 delivery_done "$EVT_SEED" "$EP_OK" || true
 POSTGRES=$(docker compose -f ../docker-compose.yml ps -q postgres)
 # A pending delivery that is long overdue and marked as queued, but whose job is not in Redis:
 # exactly what is left behind when Redis restarts without its data.
-LOST=$(docker exec "$POSTGRES" psql -U webhook -d webhook -tA -c "
+LOST=$(docker exec "$POSTGRES" psql -U tern -d tern -tA -c "
   INSERT INTO deliveries (id, tenant_id, event_id, endpoint_id, status, enqueued_at, created_at, updated_at)
   SELECT gen_random_uuid(), e.tenant_id, e.id, '$EP_OK', 'pending',
          now() - interval '10 minutes', now() - interval '10 minutes', now() - interval '10 minutes'

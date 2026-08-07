@@ -164,7 +164,7 @@ expect "no further cursor" None "$(field 'd["next_cursor"]')"
 
 echo "== outbox sweeper: a delivery committed but never queued (simulates a crash before the Redis write)"
 POSTGRES=$(docker compose -f ../docker-compose.yml ps -q postgres)
-ORPHAN=$(docker exec "$POSTGRES" psql -U webhook -d webhook -tA -c "
+ORPHAN=$(docker exec "$POSTGRES" psql -U tern -d tern -tA -c "
   INSERT INTO deliveries (id, tenant_id, event_id, endpoint_id, status, created_at, updated_at)
   SELECT gen_random_uuid(), e.tenant_id, e.id, '$EP_OK', 'pending', now() - interval '2 minutes', now() - interval '2 minutes'
   FROM events e WHERE e.id = '$EVT1'
@@ -172,7 +172,7 @@ ORPHAN=$(docker exec "$POSTGRES" psql -U webhook -d webhook -tA -c "
 orphan_delivered() { call GET "/v1/deliveries/$ORPHAN" "$KEY"; [[ $(field 'd["status"]') == "succeeded" ]]; }
 poll 45 orphan_delivered || true
 expect "the sweeper queued the orphan and the worker delivered it" succeeded "$(call GET "/v1/deliveries/$ORPHAN" "$KEY"; field 'd["status"]')"
-expect "the orphan is now marked as enqueued" t "$(docker exec "$POSTGRES" psql -U webhook -d webhook -tA -c "SELECT enqueued_at IS NOT NULL FROM deliveries WHERE id = '$ORPHAN'")"
+expect "the orphan is now marked as enqueued" t "$(docker exec "$POSTGRES" psql -U tern -d tern -tA -c "SELECT enqueued_at IS NOT NULL FROM deliveries WHERE id = '$ORPHAN'")"
 
 echo "== graceful shutdown"
 kill -TERM "$WORKER_PID"

@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/httpx"
 )
 
 // Controller translates HTTP requests into service calls. It owns parsing and response

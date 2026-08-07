@@ -41,7 +41,7 @@ call POST /admin/tenants "$ADMIN_TOKEN" '{"name":" "}'
 expect "blank tenant name" 400 "$CODE"
 call GET /v1/tenant ""
 expect "no api key" 401 "$CODE"
-call GET /v1/tenant "whk_bogus"
+call GET /v1/tenant "tern_bogus"
 expect "bad api key" 401 "$CODE"
 call GET /v1/tenant "$ADMIN_TOKEN"
 expect "admin token is not an api key" 401 "$CODE"

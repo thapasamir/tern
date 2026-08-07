@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/signing"
+	"github.com/samirthapa/tern/internal/shared/signing"
 )
 
 const (

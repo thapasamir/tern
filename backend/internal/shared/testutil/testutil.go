@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/apperror"
 )
 
 // WantCode fails the test unless err is an application error with the given code.

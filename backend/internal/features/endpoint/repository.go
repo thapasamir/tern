@@ -8,10 +8,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	endpointdb "github.com/samirthapa/webhook-platform/internal/features/endpoint/db"
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/database"
-	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
+	endpointdb "github.com/samirthapa/tern/internal/features/endpoint/db"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/database"
+	"github.com/samirthapa/tern/internal/shared/pagination"
 )
 
 // ErrNotFound is returned by repositories when no row matches the tenant and ID.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
+	"github.com/samirthapa/tern/internal/shared/testutil"
 )
 
 // fakeQueue hands out the jobs it holds, at most `limit` per claim, and records every call.

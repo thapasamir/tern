@@ -3,7 +3,7 @@ package event
 import (
 	"net/http"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/httpx"
 )
 
 const (

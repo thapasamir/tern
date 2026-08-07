@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/ids"
-	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/ids"
+	"github.com/samirthapa/tern/internal/shared/testutil"
 )
 
 // fakeRepo is an in-memory Repository. fanOut is how many deliveries each new event produces.

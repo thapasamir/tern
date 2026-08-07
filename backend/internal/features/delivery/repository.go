@@ -10,11 +10,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	deliverydb "github.com/samirthapa/webhook-platform/internal/features/delivery/db"
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/database"
-	"github.com/samirthapa/webhook-platform/internal/shared/ids"
-	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
+	deliverydb "github.com/samirthapa/tern/internal/features/delivery/db"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/database"
+	"github.com/samirthapa/tern/internal/shared/ids"
+	"github.com/samirthapa/tern/internal/shared/pagination"
 )
 
 // ErrNotFound is returned by repositories when no row matches.

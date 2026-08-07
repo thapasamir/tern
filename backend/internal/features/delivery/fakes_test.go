@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
+	"github.com/samirthapa/tern/internal/shared/pagination"
 )
 
 // fakeRepo is an in-memory Repository that records how it was used.

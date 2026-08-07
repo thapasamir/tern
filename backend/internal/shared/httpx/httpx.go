@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/apperror"
 )
 
 type errorBody struct {

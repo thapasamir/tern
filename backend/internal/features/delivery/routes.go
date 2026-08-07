@@ -4,7 +4,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/httpx"
 )
 
 // Module wires the API side of the delivery feature. The worker builds a Processor instead

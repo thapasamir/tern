@@ -8,7 +8,7 @@ import (
 )
 
 // QueueName is the Redis namespace of the delivery job queue, shared by the API and the worker.
-const QueueName = "webhook:deliveries"
+const QueueName = "tern:deliveries"
 
 type Status string
 

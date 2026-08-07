@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/testutil"
 )
 
 func TestText(t *testing.T) {

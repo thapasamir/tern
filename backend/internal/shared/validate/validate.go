@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/apperror"
 )
 
 // Text trims s and checks its length in characters (not bytes). With required set an empty

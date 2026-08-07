@@ -9,10 +9,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/ids"
-	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
-	"github.com/samirthapa/webhook-platform/internal/shared/testutil"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/ids"
+	"github.com/samirthapa/tern/internal/shared/pagination"
+	"github.com/samirthapa/tern/internal/shared/testutil"
 )
 
 func newService() (*Service, *fakeRepo, *fakeQueue) {

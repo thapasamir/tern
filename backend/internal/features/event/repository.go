@@ -8,10 +8,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	eventdb "github.com/samirthapa/webhook-platform/internal/features/event/db"
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/database"
-	"github.com/samirthapa/webhook-platform/internal/shared/ids"
+	eventdb "github.com/samirthapa/tern/internal/features/event/db"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/database"
+	"github.com/samirthapa/tern/internal/shared/ids"
 )
 
 // ErrNotFound is returned by repositories when no row matches the tenant and key.

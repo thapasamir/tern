@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	tenantdb "github.com/samirthapa/webhook-platform/internal/features/tenant/db"
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/database"
+	tenantdb "github.com/samirthapa/tern/internal/features/tenant/db"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/database"
 )
 
 // ErrNotFound is returned by repositories when a row does not exist.

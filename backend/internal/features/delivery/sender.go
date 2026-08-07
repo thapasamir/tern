@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/urlguard"
+	"github.com/samirthapa/tern/internal/shared/urlguard"
 )
 
 const (
-	userAgent        = "WebhookPlatform/1.0"
+	userAgent        = "Tern/1.0"
 	maxResponseBytes = 4 * 1024
 )
 

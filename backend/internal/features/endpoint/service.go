@@ -9,12 +9,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/eventtype"
-	"github.com/samirthapa/webhook-platform/internal/shared/ids"
-	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
-	"github.com/samirthapa/webhook-platform/internal/shared/signing"
-	"github.com/samirthapa/webhook-platform/internal/shared/validate"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/eventtype"
+	"github.com/samirthapa/tern/internal/shared/ids"
+	"github.com/samirthapa/tern/internal/shared/pagination"
+	"github.com/samirthapa/tern/internal/shared/signing"
+	"github.com/samirthapa/tern/internal/shared/validate"
 )
 
 const (

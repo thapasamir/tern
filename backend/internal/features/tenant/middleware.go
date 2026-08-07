@@ -5,8 +5,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/apperror"
-	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/apperror"
+	"github.com/samirthapa/tern/internal/shared/httpx"
 )
 
 // Authenticate requires a valid tenant API key and stores the tenant ID in the request context.

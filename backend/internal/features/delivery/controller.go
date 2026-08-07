@@ -3,8 +3,8 @@ package delivery
 import (
 	"net/http"
 
-	"github.com/samirthapa/webhook-platform/internal/shared/httpx"
-	"github.com/samirthapa/webhook-platform/internal/shared/pagination"
+	"github.com/samirthapa/tern/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/pagination"
 )
 
 // Controller translates HTTP requests into service calls. It owns parsing and response

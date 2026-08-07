@@ -61,7 +61,7 @@ type Redis struct {
 	now        func() time.Time
 }
 
-// New returns a queue whose keys are namespaced under name, e.g. "webhook:deliveries".
+// New returns a queue whose keys are namespaced under name, e.g. "tern:deliveries".
 func New(rdb *redis.Client, name string) *Redis {
 	return &Redis{
 		rdb:        rdb,

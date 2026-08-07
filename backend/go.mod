@@ -1,4 +1,4 @@
-module github.com/samirthapa/webhook-platform
+module github.com/samirthapa/tern
 
 go 1.26.0
 

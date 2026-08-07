@@ -1,16 +1,20 @@
+# The project name is set explicitly so that container and volume names do not depend on
+# the name of the folder the repository happens to live in.
+name: tern
+
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: webhook
-      POSTGRES_PASSWORD: webhook
-      POSTGRES_DB: webhook
+      POSTGRES_USER: tern
+      POSTGRES_PASSWORD: tern
+      POSTGRES_DB: tern
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U webhook"]
+      test: ["CMD-SHELL", "pg_isready -U tern"]
       interval: 3s
       timeout: 3s
       retries: 10
