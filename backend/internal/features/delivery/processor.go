@@ -2,41 +2,18 @@ package delivery
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
-
-	"github.com/samirthapa/tern/internal/shared/ptr"
-	"github.com/samirthapa/tern/internal/shared/signing"
 )
 
-const (
-	maxErrorLen = 500
-
-	// reasonGone is recorded when an endpoint is disabled because it answered 410 Gone.
-	reasonGone = "endpoint responded with HTTP 410 Gone"
-)
+// noRetry is the zero time. Process returns it to say "this job is finished, do not run it again".
+var noRetry time.Time
 
 var errEndpointDisabled = errors.New("endpoint is disabled")
-
-// EndpointHealth lets the processor report how an endpoint is doing, without knowing how the
-// endpoint feature stores or acts on it. It is implemented by endpoint.Service and wired in main.go.
-type EndpointHealth interface {
-	// RecordSuccess clears the endpoint's streak of failures.
-	RecordSuccess(ctx context.Context, tenantID, endpointID uuid.UUID) error
-	// RecordFailure counts a failed attempt and disables the endpoint after disableAfter in a row.
-	// disabled is true only for the call that actually disabled it.
-	RecordFailure(ctx context.Context, tenantID, endpointID uuid.UUID, disableAfter int) (disabled bool, err error)
-	// DisableIfActive disables the endpoint at once, unless it already is. disabled is true only
-	// for the call that actually disabled it.
-	DisableIfActive(ctx context.Context, tenantID, endpointID uuid.UUID, reason string) (disabled bool, err error)
-}
 
 // ProcessorConfig holds the reliability policy of the processor.
 type ProcessorConfig struct {
@@ -46,6 +23,14 @@ type ProcessorConfig struct {
 }
 
 // Processor makes the delivery attempts. The worker calls Process for every job it claims.
+//
+// The work of one attempt is split across the files of this package by concern:
+//
+//	processor.go  the sequence of steps (this file)
+//	request.go    building the signed HTTP request
+//	verdict.go    deciding what an attempt's result means: succeed, retry or give up
+//	record.go     turning the outcome into the database record
+//	health.go     reporting the outcome to the endpoint, which may disable it
 type Processor struct {
 	repo   Repository
 	sender Sender
@@ -60,8 +45,8 @@ func NewProcessor(repo Repository, sender Sender, health EndpointHealth, cfg Pro
 }
 
 // Process makes one attempt for the delivery named by jobID and records the outcome. It returns
-// when the job must run again (the zero time if it is finished), or an error if the work could not
-// be done right now (see worker.Processor).
+// when the job must run again (noRetry if it is finished), or an error if the work could not be
+// done right now (see worker.Processor).
 //
 // A delivery that fails because the customer's endpoint misbehaved is not an error here: that is
 // a recorded outcome, and, unless the retries are used up, a retry is scheduled for it.
@@ -72,58 +57,56 @@ func NewProcessor(repo Repository, sender Sender, health EndpointHealth, cfg Pro
 // crash between sending and recording sends the request twice, which is why every request
 // carries a stable webhook-id for the receiver to de-duplicate on.
 func (p *Processor) Process(ctx context.Context, jobID string) (time.Time, error) {
-	id, err := uuid.Parse(jobID)
-	if err != nil {
-		p.log.Warn("dropping job with a malformed id", "job", jobID)
-		return time.Time{}, nil
-	}
-
-	work, err := p.repo.GetWork(ctx, id)
-	if errors.Is(err, ErrNotFound) {
-		p.log.Warn("dropping job for a delivery that no longer exists", "delivery_id", id)
-		return time.Time{}, nil
-	}
-	if err != nil {
-		return time.Time{}, fmt.Errorf("load delivery %s: %w", id, err)
-	}
-	if work.Status != StatusPending {
-		return time.Time{}, nil // duplicate job: this delivery was already completed
+	work, ok, err := p.loadWork(ctx, jobID)
+	if err != nil || !ok {
+		return noRetry, err
 	}
 
 	started := p.now()
-	if work.NextAttemptAt != nil && started.Before(*work.NextAttemptAt) {
+	if due := work.NextAttemptAt; due != nil && started.Before(*due) {
 		// The job came back before the retry is due, e.g. after its lease expired because the
 		// worker could not reschedule it. Never retry early: put it back where it belongs.
-		return *work.NextAttemptAt, nil
+		return *due, nil
 	}
 
 	result := p.attempt(ctx, work, started)
-	v := p.judge(work, result, p.now())
-	rec := newAttemptRecord(work.DeliveryID, result.SendResult, v, started, p.now())
+	finished := p.now()
+	v := p.judge(work, result, finished)
+	rec := newAttemptRecord(work.DeliveryID, result.SendResult, v, started, finished)
 
 	recorded, err := p.repo.RecordAttempt(ctx, rec)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("record attempt for delivery %s: %w", id, err)
+		return noRetry, fmt.Errorf("record attempt for delivery %s: %w", work.DeliveryID, err)
 	}
-	p.log.Info("delivery attempt finished",
-		"delivery_id", id,
-		"event_id", work.EventID,
-		"attempt", work.AttemptCount+1,
-		"outcome", rec.Outcome,
-		"status_code", result.StatusCode,
-		"duration_ms", rec.Duration.Milliseconds(),
-		"retry_at", rec.RetryAt,
-		"recorded", recorded,
-	)
+	p.logAttempt(work, result, rec, recorded)
 	if !recorded {
-		return time.Time{}, nil // another worker got there first; it owns the follow-up
+		return noRetry, nil // another worker got there first; it owns the follow-up
 	}
 
-	p.updateHealth(ctx, work, v)
-	if v.retryAt != nil {
-		return *v.retryAt, nil
+	p.reportHealth(ctx, work, v)
+	return v.retryAt, nil
+}
+
+// loadWork reads the delivery a job refers to. ok is false when there is nothing to do: the job is
+// malformed, its delivery no longer exists, or the delivery already finished (a duplicate job).
+// Those jobs must be acknowledged and dropped, not retried, so they are not errors. An error is
+// returned only when the database could not be read, which is worth trying again later.
+func (p *Processor) loadWork(ctx context.Context, jobID string) (work Work, ok bool, err error) {
+	id, err := uuid.Parse(jobID)
+	if err != nil {
+		p.log.Warn("dropping job with a malformed id", "job", jobID)
+		return Work{}, false, nil
 	}
-	return time.Time{}, nil
+
+	work, err = p.repo.GetWork(ctx, id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		p.log.Warn("dropping job for a delivery that no longer exists", "delivery_id", id)
+		return Work{}, false, nil
+	case err != nil:
+		return Work{}, false, fmt.Errorf("load delivery %s: %w", id, err)
+	}
+	return work, work.Status == StatusPending, nil
 }
 
 // attemptResult is what an attempt produced.
@@ -134,159 +117,32 @@ type attemptResult struct {
 	skipped bool
 }
 
+// skipped is the result of an attempt that could not be made, for the given reason.
+func skipped(reason error) attemptResult {
+	return attemptResult{SendResult: SendResult{Err: reason}, skipped: true}
+}
+
+// attempt sends the delivery's request, unless there is no point in doing so.
 func (p *Processor) attempt(ctx context.Context, w Work, at time.Time) attemptResult {
 	if !w.EndpointActive {
-		return attemptResult{SendResult: SendResult{Err: errEndpointDisabled}, skipped: true}
+		return skipped(errEndpointDisabled)
 	}
-	body, err := encodeEnvelope(w)
+	req, err := buildRequest(w, at)
 	if err != nil {
-		return attemptResult{SendResult: SendResult{Err: fmt.Errorf("encode payload: %w", err)}, skipped: true}
+		return skipped(err)
 	}
-	header, err := signing.Headers(w.EndpointSecret, w.EventID.String(), at, body)
-	if err != nil {
-		return attemptResult{SendResult: SendResult{Err: fmt.Errorf("sign payload: %w", err)}, skipped: true}
-	}
-	return attemptResult{SendResult: p.sender.Send(ctx, SendRequest{URL: w.EndpointURL, Header: header, Body: body})}
+	return attemptResult{SendResult: p.sender.Send(ctx, req)}
 }
 
-// healthAction is what an attempt tells the endpoint about its health.
-type healthAction int
-
-const (
-	healthNone    healthAction = iota // nothing: the attempt says nothing about the endpoint
-	healthSuccess                     // the endpoint answered fine
-	healthFailure                     // the endpoint failed this attempt
-	healthGone                        // the endpoint says it is gone for good (HTTP 410)
-)
-
-// verdict is the decision taken about an attempt.
-type verdict struct {
-	outcome Status     // succeeded, failed, or pending (a retry is scheduled)
-	retryAt *time.Time // set exactly when outcome is pending
-	health  healthAction
-}
-
-// judge decides what an attempt's result means:
-//   - a 2xx response succeeds;
-//   - a 410 fails for good at once, because the endpoint says it will never be back;
-//   - an attempt that could not be made at all fails for good, because trying again changes nothing;
-//   - anything else (network errors, timeouts, 4xx, 5xx, redirects) is retried while the schedule
-//     has attempts left, and fails for good after that.
-func (p *Processor) judge(w Work, res attemptResult, now time.Time) verdict {
-	switch {
-	case res.skipped:
-		return verdict{outcome: StatusFailed, health: healthNone}
-	case res.Err == nil && isSuccess(res.StatusCode):
-		return verdict{outcome: StatusSucceeded, health: healthSuccess}
-	case res.Err == nil && res.StatusCode == http.StatusGone:
-		return verdict{outcome: StatusFailed, health: healthGone}
-	}
-
-	var retryAfter time.Duration
-	if honoursRetryAfter(res.StatusCode) {
-		retryAfter = res.RetryAfter
-	}
-	if delay, ok := p.cfg.Retry.NextDelay(w.AttemptCount+1, retryAfter); ok {
-		at := now.Add(delay)
-		return verdict{outcome: StatusPending, retryAt: &at, health: healthFailure}
-	}
-	return verdict{outcome: StatusFailed, health: healthFailure}
-}
-
-// updateHealth tells the endpoint how the attempt went. It runs after the attempt is recorded and
-// is best effort: failing to update a counter must not fail the job and trigger a second send.
-// When the update disables the endpoint, its other pending deliveries are failed on the spot
-// rather than left to retry against an endpoint that will refuse them.
-func (p *Processor) updateHealth(ctx context.Context, w Work, v verdict) {
-	var (
-		disabled bool
-		err      error
+func (p *Processor) logAttempt(w Work, res attemptResult, rec AttemptRecord, recorded bool) {
+	p.log.Info("delivery attempt finished",
+		"delivery_id", w.DeliveryID,
+		"event_id", w.EventID,
+		"attempt", w.AttemptCount+1,
+		"outcome", rec.Outcome,
+		"status_code", res.StatusCode,
+		"duration_ms", rec.Duration.Milliseconds(),
+		"retry_at", rec.RetryAt,
+		"recorded", recorded,
 	)
-	switch v.health {
-	case healthSuccess:
-		err = p.health.RecordSuccess(ctx, w.TenantID, w.EndpointID)
-	case healthFailure:
-		disabled, err = p.health.RecordFailure(ctx, w.TenantID, w.EndpointID, p.cfg.AutoDisableAfter)
-	case healthGone:
-		disabled, err = p.health.DisableIfActive(ctx, w.TenantID, w.EndpointID, reasonGone)
-	default:
-		return
-	}
-	if err != nil {
-		p.log.Error("updating endpoint health failed", "endpoint_id", w.EndpointID, "error", err)
-		return
-	}
-	if !disabled {
-		return
-	}
-
-	failed, err := p.repo.FailPendingForEndpoint(ctx, w.EndpointID, errEndpointDisabled.Error(), p.now())
-	if err != nil {
-		p.log.Error("failing the pending deliveries of a disabled endpoint failed",
-			"endpoint_id", w.EndpointID, "error", err)
-		return
-	}
-	p.log.Warn("endpoint disabled", "endpoint_id", w.EndpointID, "pending_deliveries_failed", failed)
-}
-
-// envelope is the JSON body a customer's endpoint receives.
-type envelope struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"`
-	CreatedAt time.Time       `json:"created_at"`
-	Data      json.RawMessage `json:"data"`
-}
-
-func encodeEnvelope(w Work) ([]byte, error) {
-	return json.Marshal(envelope{
-		ID:        w.EventID.String(),
-		Type:      w.EventType,
-		CreatedAt: w.EventCreatedAt.UTC(),
-		Data:      w.Payload,
-	})
-}
-
-// newAttemptRecord turns a send result and the verdict on it into the record to persist.
-func newAttemptRecord(deliveryID uuid.UUID, res SendResult, v verdict, started, finished time.Time) AttemptRecord {
-	rec := AttemptRecord{
-		DeliveryID: deliveryID,
-		Outcome:    v.outcome,
-		RetryAt:    v.retryAt,
-		Duration:   res.Duration,
-		StartedAt:  started,
-		FinishedAt: finished,
-	}
-
-	switch {
-	case res.Err != nil:
-		rec.Error = ptr.To(truncate(sanitize(res.Err.Error()), maxErrorLen))
-	case !isSuccess(res.StatusCode):
-		rec.Error = ptr.To(fmt.Sprintf("endpoint responded with HTTP %d", res.StatusCode))
-	}
-	if res.StatusCode != 0 {
-		rec.StatusCode = ptr.To(res.StatusCode)
-	}
-	if res.Body != "" {
-		rec.ResponseBody = ptr.To(res.Body)
-	}
-	return rec
-}
-
-func isSuccess(status int) bool { return status >= 200 && status < 300 }
-
-// honoursRetryAfter reports whether a response with this status may postpone the retry:
-// the two statuses that mean "too busy right now, ask again later".
-func honoursRetryAfter(status int) bool {
-	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
-}
-
-// truncate shortens s to at most max bytes without splitting a UTF-8 character.
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	for max > 0 && !utf8.RuneStart(s[max]) {
-		max--
-	}
-	return s[:max]
 }
