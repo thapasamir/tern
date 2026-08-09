@@ -1,4 +1,4 @@
-package delivery
+package sender
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 
 // The servers below listen on 127.0.0.1, so tests that want the request to go through use
 // allowLocal. The one test that checks the guard uses the production setting instead.
-func newLocalSender(timeout time.Duration) *HTTPSender { return NewHTTPSender(true, timeout) }
+func newLocalSender(timeout time.Duration) *Client { return New(true, timeout) }
 
 func TestSend_PostsTheBodyAndHeaders(t *testing.T) {
 	var gotMethod, gotContentType, gotUserAgent, gotCustom string
@@ -29,7 +29,7 @@ func TestSend_PostsTheBodyAndHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res := newLocalSender(5*time.Second).Send(context.Background(), SendRequest{
+	res := newLocalSender(5*time.Second).Send(context.Background(), Request{
 		URL:    srv.URL,
 		Header: http.Header{"Webhook-Id": {"evt_1"}},
 		Body:   []byte(`{"a":1}`),
@@ -55,7 +55,7 @@ func TestSend_ErrorStatusesAreResultsNotErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res := newLocalSender(5*time.Second).Send(context.Background(), SendRequest{URL: srv.URL})
+	res := newLocalSender(5*time.Second).Send(context.Background(), Request{URL: srv.URL})
 	if res.Err != nil || res.StatusCode != 500 || !strings.Contains(res.Body, "kaput") {
 		t.Fatalf("result = %+v, want status 500 with the body and no error", res)
 	}
@@ -67,7 +67,7 @@ func TestSend_CapsHowMuchOfTheResponseItReads(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res := newLocalSender(5*time.Second).Send(context.Background(), SendRequest{URL: srv.URL})
+	res := newLocalSender(5*time.Second).Send(context.Background(), Request{URL: srv.URL})
 	if res.Err != nil || len(res.Body) != maxResponseBytes {
 		t.Fatalf("body is %d bytes (err %v), want exactly the %d-byte cap", len(res.Body), res.Err, maxResponseBytes)
 	}
@@ -79,7 +79,7 @@ func TestSend_SanitisesBinaryResponsesForStorage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res := newLocalSender(5*time.Second).Send(context.Background(), SendRequest{URL: srv.URL})
+	res := newLocalSender(5*time.Second).Send(context.Background(), Request{URL: srv.URL})
 	if !utf8.ValidString(res.Body) || strings.ContainsRune(res.Body, 0) {
 		t.Fatalf("body %q is not safe for a Postgres text column (invalid UTF-8 or NUL)", res.Body)
 	}
@@ -95,7 +95,7 @@ func TestSend_DoesNotFollowRedirects(t *testing.T) {
 	redirector := httptest.NewServer(http.RedirectHandler(target.URL, http.StatusFound))
 	defer redirector.Close()
 
-	res := newLocalSender(5*time.Second).Send(context.Background(), SendRequest{URL: redirector.URL})
+	res := newLocalSender(5*time.Second).Send(context.Background(), Request{URL: redirector.URL})
 	if res.Err != nil || res.StatusCode != http.StatusFound {
 		t.Fatalf("result = %+v, want the 302 itself as the outcome", res)
 	}
@@ -114,7 +114,7 @@ func TestSend_TimesOutOnSlowEndpoints(t *testing.T) {
 	defer srv.Close()
 
 	start := time.Now()
-	res := newLocalSender(100*time.Millisecond).Send(context.Background(), SendRequest{URL: srv.URL})
+	res := newLocalSender(100*time.Millisecond).Send(context.Background(), Request{URL: srv.URL})
 	if res.Err == nil || res.StatusCode != 0 {
 		t.Fatalf("result = %+v, want a timeout error and no status", res)
 	}
@@ -130,7 +130,7 @@ func TestSend_RespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(50*time.Millisecond, cancel)
 
-	res := newLocalSender(10*time.Second).Send(ctx, SendRequest{URL: srv.URL})
+	res := newLocalSender(10*time.Second).Send(ctx, Request{URL: srv.URL})
 	if !errors.Is(res.Err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", res.Err)
 	}
@@ -147,7 +147,7 @@ func TestSend_UnreachableAndInvalidDestinations(t *testing.T) {
 		"unsupported scheme": "gopher://example.com",
 	} {
 		t.Run(name, func(t *testing.T) {
-			res := newLocalSender(2*time.Second).Send(context.Background(), SendRequest{URL: target})
+			res := newLocalSender(2*time.Second).Send(context.Background(), Request{URL: target})
 			if res.Err == nil || res.StatusCode != 0 {
 				t.Fatalf("result = %+v, want an error and no status", res)
 			}
@@ -162,9 +162,9 @@ func TestSend_RefusesPrivateAddressesAtConnectTime(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
 	defer srv.Close() // listens on 127.0.0.1
 
-	res := NewHTTPSender(false, 5*time.Second).Send(context.Background(), SendRequest{URL: srv.URL})
-	if !errors.Is(res.Err, errBlockedAddress) {
-		t.Fatalf("error = %v, want errBlockedAddress", res.Err)
+	res := New(false, 5*time.Second).Send(context.Background(), Request{URL: srv.URL})
+	if !errors.Is(res.Err, ErrBlockedAddress) {
+		t.Fatalf("error = %v, want ErrBlockedAddress", res.Err)
 	}
 	if hits.Load() != 0 {
 		t.Fatal("the request reached a loopback server despite the guard")
@@ -179,8 +179,8 @@ func TestSend_BlocksPrivateAddressesEvenWhenReachedThroughAHostname(t *testing.T
 	defer srv.Close()
 	hostnameURL := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
 
-	res := NewHTTPSender(false, 5*time.Second).Send(context.Background(), SendRequest{URL: hostnameURL})
-	if !errors.Is(res.Err, errBlockedAddress) || hits.Load() != 0 {
+	res := New(false, 5*time.Second).Send(context.Background(), Request{URL: hostnameURL})
+	if !errors.Is(res.Err, ErrBlockedAddress) || hits.Load() != 0 {
 		t.Fatalf("error = %v, hits = %d; a hostname resolving to loopback must be refused", res.Err, hits.Load())
 	}
 }
@@ -219,7 +219,7 @@ func TestSend_ReportsRetryAfter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res := newLocalSender(5*time.Second).Send(context.Background(), SendRequest{URL: srv.URL})
+	res := newLocalSender(5*time.Second).Send(context.Background(), Request{URL: srv.URL})
 	if res.Err != nil || res.StatusCode != http.StatusTooManyRequests || res.RetryAfter != 42*time.Second {
 		t.Fatalf("result = %+v, want a 429 with RetryAfter of 42s", res)
 	}

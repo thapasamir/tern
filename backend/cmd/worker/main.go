@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/samirthapa/tern/internal/features/delivery"
+	"github.com/samirthapa/tern/internal/features/delivery/dispatch"
+	"github.com/samirthapa/tern/internal/features/delivery/retry"
+	"github.com/samirthapa/tern/internal/features/delivery/sender"
 	"github.com/samirthapa/tern/internal/features/endpoint"
 	"github.com/samirthapa/tern/internal/shared/cache"
 	"github.com/samirthapa/tern/internal/shared/config"
@@ -66,12 +69,12 @@ func run() error {
 	deliveries := delivery.NewService(repo, jobs)
 	// The endpoint feature owns an endpoint's health; the processor reports each attempt to it.
 	endpoints := endpoint.NewService(endpoint.NewRepository(pool), urlguard.NewValidator(cfg.AllowLocalEndpoints))
-	retry := delivery.NewRetryPolicy(cfg.RetrySchedule)
-	processor := delivery.NewProcessor(
+	policy := retry.NewPolicy(cfg.RetrySchedule)
+	processor := dispatch.NewProcessor(
 		repo,
-		delivery.NewHTTPSender(cfg.AllowLocalEndpoints, cfg.DeliveryTimeout),
+		sender.New(cfg.AllowLocalEndpoints, cfg.DeliveryTimeout),
 		endpoints,
-		delivery.ProcessorConfig{Retry: retry, AutoDisableAfter: cfg.AutoDisableAfter},
+		dispatch.ProcessorConfig{Retry: policy, AutoDisableAfter: cfg.AutoDisableAfter},
 	)
 	if cfg.AllowLocalEndpoints {
 		log.Warn("ALLOW_LOCAL_ENDPOINTS is on: deliveries to private addresses are allowed (development only)")
@@ -93,7 +96,7 @@ func run() error {
 	log.Info("worker started",
 		"concurrency", cfg.WorkerConcurrency,
 		"delivery_timeout", cfg.DeliveryTimeout,
-		"max_attempts", retry.MaxAttempts(),
+		"max_attempts", policy.MaxAttempts(),
 		"auto_disable_after", cfg.AutoDisableAfter,
 	)
 	wg.Go(func() { runner.Run(ctx) })

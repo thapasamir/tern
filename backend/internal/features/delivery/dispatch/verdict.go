@@ -1,8 +1,10 @@
-package delivery
+package dispatch
 
 import (
 	"net/http"
 	"time"
+
+	"github.com/samirthapa/tern/internal/features/delivery"
 )
 
 // healthAction is what an attempt tells the endpoint about its health.
@@ -17,8 +19,8 @@ const (
 
 // verdict is what an attempt's result means, for the delivery and for the endpoint.
 type verdict struct {
-	outcome Status    // succeeded, failed, or pending (a retry is scheduled)
-	retryAt time.Time // when to try again; set exactly when outcome is pending
+	outcome delivery.Status // succeeded, failed, or pending (a retry is scheduled)
+	retryAt time.Time       // when to try again; set exactly when outcome is pending
 	health  healthAction
 }
 
@@ -28,21 +30,21 @@ type verdict struct {
 //   - an attempt that could not be made at all fails for good, because trying again changes nothing;
 //   - anything else (network errors, timeouts, 4xx, 5xx, redirects) is retried while the schedule
 //     has attempts left, and fails for good after that.
-func (p *Processor) judge(w Work, res attemptResult, now time.Time) verdict {
+func (p *Processor) judge(w delivery.Work, res attemptResult, now time.Time) verdict {
 	switch {
 	case res.skipped:
-		return verdict{outcome: StatusFailed}
+		return verdict{outcome: delivery.StatusFailed}
 	case res.Err == nil && isSuccess(res.StatusCode):
-		return verdict{outcome: StatusSucceeded, health: healthSuccess}
+		return verdict{outcome: delivery.StatusSucceeded, health: healthSuccess}
 	case res.Err == nil && res.StatusCode == http.StatusGone:
-		return verdict{outcome: StatusFailed, health: healthGone}
+		return verdict{outcome: delivery.StatusFailed, health: healthGone}
 	}
 	return p.retryOrGiveUp(w, res, now)
 }
 
 // retryOrGiveUp handles a failure that is worth retrying: it schedules the next attempt if the
 // retry schedule has one left, and fails the delivery for good if not.
-func (p *Processor) retryOrGiveUp(w Work, res attemptResult, now time.Time) verdict {
+func (p *Processor) retryOrGiveUp(w delivery.Work, res attemptResult, now time.Time) verdict {
 	var retryAfter time.Duration
 	if honoursRetryAfter(res.StatusCode) {
 		retryAfter = res.RetryAfter
@@ -50,9 +52,9 @@ func (p *Processor) retryOrGiveUp(w Work, res attemptResult, now time.Time) verd
 
 	delay, ok := p.cfg.Retry.NextDelay(w.AttemptCount+1, retryAfter)
 	if !ok {
-		return verdict{outcome: StatusFailed, health: healthFailure}
+		return verdict{outcome: delivery.StatusFailed, health: healthFailure}
 	}
-	return verdict{outcome: StatusPending, retryAt: now.Add(delay), health: healthFailure}
+	return verdict{outcome: delivery.StatusPending, retryAt: now.Add(delay), health: healthFailure}
 }
 
 func isSuccess(status int) bool { return status >= 200 && status < 300 }

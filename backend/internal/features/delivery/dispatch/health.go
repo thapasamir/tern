@@ -1,9 +1,11 @@
-package delivery
+package dispatch
 
 import (
 	"context"
 
 	"github.com/google/uuid"
+
+	"github.com/samirthapa/tern/internal/features/delivery"
 )
 
 // reasonGone is recorded when an endpoint is disabled because it answered 410 Gone.
@@ -25,7 +27,7 @@ type EndpointHealth interface {
 // reportHealth tells the endpoint how the attempt went. It runs after the attempt is recorded and
 // is best effort: failing to update a counter must not fail the job and trigger a second send.
 // If this is what disables the endpoint, its other pending deliveries are failed on the spot.
-func (p *Processor) reportHealth(ctx context.Context, w Work, v verdict) {
+func (p *Processor) reportHealth(ctx context.Context, w delivery.Work, v verdict) {
 	disabled, err := p.recordHealth(ctx, w, v.health)
 	if err != nil {
 		p.log.Error("updating endpoint health failed", "endpoint_id", w.EndpointID, "error", err)
@@ -38,7 +40,7 @@ func (p *Processor) reportHealth(ctx context.Context, w Work, v verdict) {
 
 // recordHealth passes the attempt's health action on to the endpoint feature and reports whether
 // that disabled the endpoint.
-func (p *Processor) recordHealth(ctx context.Context, w Work, action healthAction) (disabled bool, err error) {
+func (p *Processor) recordHealth(ctx context.Context, w delivery.Work, action healthAction) (disabled bool, err error) {
 	switch action {
 	case healthSuccess:
 		return false, p.health.RecordSuccess(ctx, w.TenantID, w.EndpointID)

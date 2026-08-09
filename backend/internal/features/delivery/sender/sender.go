@@ -1,4 +1,6 @@
-package delivery
+// Package sender makes the outbound HTTP requests of webhook deliveries. It is a client built for
+// calling addresses chosen by other people, so it is careful in ways a default http.Client is not.
+package sender
 
 import (
 	"bytes"
@@ -21,19 +23,19 @@ const (
 	maxResponseBytes = 4 * 1024
 )
 
-// errBlockedAddress is returned when a destination resolves to a private or internal address.
-var errBlockedAddress = errors.New("destination address is not allowed")
+// ErrBlockedAddress is returned when a destination resolves to a private or internal address.
+var ErrBlockedAddress = errors.New("destination address is not allowed")
 
-// SendRequest is one HTTP POST to make.
-type SendRequest struct {
+// Request is one HTTP POST to make.
+type Request struct {
 	URL    string
 	Header http.Header
 	Body   []byte
 }
 
-// SendResult is what came back. A response with any status code, even 500, is a result with
+// Result is what came back. A response with any status code, even 500, is a result with
 // Err == nil; Err is only set when no response was obtained (DNS, connect, TLS, timeout...).
-type SendResult struct {
+type Result struct {
 	StatusCode int // 0 when no response was received
 	// Body is the beginning of the response, sanitised to be valid UTF-8 without NUL bytes.
 	Body     string
@@ -43,25 +45,20 @@ type SendResult struct {
 	Err        error
 }
 
-// Sender performs the HTTP request of a delivery attempt.
-type Sender interface {
-	Send(ctx context.Context, req SendRequest) SendResult
-}
-
-// HTTPSender is the production Sender. It differs from a default http.Client in the ways that
-// matter for calling addresses chosen by other people:
+// Client sends Requests. It differs from a default http.Client in the ways that matter for
+// calling addresses chosen by other people:
 //   - connections to private and internal addresses are refused when the connection is made, on
 //     the address actually resolved, which defeats DNS rebinding (see package urlguard);
 //   - redirects are not followed, because a redirect could point at an internal address;
 //   - environment proxies are ignored, because they could be used to route around the guard;
 //   - every phase of the request has a timeout and the response size we read is capped.
-type HTTPSender struct {
+type Client struct {
 	client *http.Client
 }
 
-// NewHTTPSender returns a Sender with the given overall per-request timeout.
+// New returns a Client with the given overall per-request timeout.
 // allowLocal (development only) lifts the private-address restriction.
-func NewHTTPSender(allowLocal bool, timeout time.Duration) *HTTPSender {
+func New(allowLocal bool, timeout time.Duration) *Client {
 	dialer := &net.Dialer{
 		Timeout: 5 * time.Second,
 		Control: guardConnections(allowLocal),
@@ -76,7 +73,7 @@ func NewHTTPSender(allowLocal bool, timeout time.Duration) *HTTPSender {
 		MaxIdleConnsPerHost:   2,
 		IdleConnTimeout:       90 * time.Second,
 	}
-	return &HTTPSender{client: &http.Client{
+	return &Client{client: &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -101,19 +98,20 @@ func guardConnections(allowLocal bool) func(network, address string, c syscall.R
 			return err
 		}
 		if urlguard.BlockedAddr(addr) {
-			return errBlockedAddress
+			return ErrBlockedAddress
 		}
 		return nil
 	}
 }
 
-func (s *HTTPSender) Send(ctx context.Context, r SendRequest) (res SendResult) {
+// Send makes the request and reports what came back.
+func (c *Client) Send(ctx context.Context, r Request) (res Result) {
 	start := time.Now()
 	defer func() { res.Duration = time.Since(start) }()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.URL, bytes.NewReader(r.Body))
 	if err != nil {
-		return SendResult{Err: err}
+		return Result{Err: err}
 	}
 	for name, values := range r.Header {
 		req.Header[name] = values
@@ -121,17 +119,17 @@ func (s *HTTPSender) Send(ctx context.Context, r SendRequest) (res SendResult) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := s.client.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
-		return SendResult{Err: err}
+		return Result{Err: err}
 	}
 	defer resp.Body.Close()
 
 	// A read error mid-body does not change the outcome: we already have the status code.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	return SendResult{
+	return Result{
 		StatusCode: resp.StatusCode,
-		Body:       sanitize(string(body)),
+		Body:       Sanitize(string(body)),
 		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
 	}
 }
@@ -161,8 +159,8 @@ func parseRetryAfter(value string, now time.Time) time.Duration {
 	return 0
 }
 
-// sanitize makes arbitrary bytes from a remote server safe to store in a Postgres text column,
-// which rejects invalid UTF-8 and NUL characters.
-func sanitize(s string) string {
+// Sanitize makes arbitrary text that came from a remote server safe to store in a Postgres text
+// column, which rejects invalid UTF-8 and NUL characters.
+func Sanitize(s string) string {
 	return strings.ReplaceAll(strings.ToValidUTF8(s, "�"), "\x00", "")
 }

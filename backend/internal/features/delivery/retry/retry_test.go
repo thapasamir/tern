@@ -1,4 +1,4 @@
-package delivery
+package retry
 
 import (
 	"testing"
@@ -6,13 +6,13 @@ import (
 )
 
 // fixedRand returns a policy whose jitter source always yields r.
-func fixedRand(p RetryPolicy, r float64) RetryPolicy {
+func fixedRand(p Policy, r float64) Policy {
 	p.rand = func() float64 { return r }
 	return p
 }
 
-func TestRetryPolicy_FollowsTheScheduleAndThenStops(t *testing.T) {
-	p := fixedRand(NewRetryPolicy([]time.Duration{5 * time.Second, 5 * time.Minute, time.Hour}), 0.5) // 0.5 = no jitter
+func TestPolicy_FollowsTheScheduleAndThenStops(t *testing.T) {
+	p := fixedRand(NewPolicy([]time.Duration{5 * time.Second, 5 * time.Minute, time.Hour}), 0.5) // 0.5 = no jitter
 
 	want := []time.Duration{5 * time.Second, 5 * time.Minute, time.Hour}
 	for i, wantDelay := range want {
@@ -30,21 +30,21 @@ func TestRetryPolicy_FollowsTheScheduleAndThenStops(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_NeverRetriesWithAnEmptySchedule(t *testing.T) {
-	p := NewRetryPolicy(nil)
+func TestPolicy_NeverRetriesWithAnEmptySchedule(t *testing.T) {
+	p := NewPolicy(nil)
 	if _, ok := p.NextDelay(1, 0); ok {
 		t.Fatal("an empty schedule must mean no retries")
 	}
 	if p.MaxAttempts() != 1 {
 		t.Fatalf("MaxAttempts = %d, want 1", p.MaxAttempts())
 	}
-	if _, ok := (RetryPolicy{}).NextDelay(1, 0); ok {
+	if _, ok := (Policy{}).NextDelay(1, 0); ok {
 		t.Fatal("the zero policy must not retry (and must not panic)")
 	}
 }
 
-func TestRetryPolicy_RejectsNonsenseAttemptNumbers(t *testing.T) {
-	p := NewRetryPolicy([]time.Duration{time.Second})
+func TestPolicy_RejectsNonsenseAttemptNumbers(t *testing.T) {
+	p := NewPolicy([]time.Duration{time.Second})
 	for _, attempt := range []int{0, -1} {
 		if _, ok := p.NextDelay(attempt, 0); ok {
 			t.Errorf("NextDelay(%d) must not allow a retry", attempt)
@@ -52,9 +52,9 @@ func TestRetryPolicy_RejectsNonsenseAttemptNumbers(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_JitterStaysWithinItsBounds(t *testing.T) {
+func TestPolicy_JitterStaysWithinItsBounds(t *testing.T) {
 	base := 10 * time.Minute
-	p := NewRetryPolicy([]time.Duration{base})
+	p := NewPolicy([]time.Duration{base})
 
 	lowest, _ := fixedRand(p, 0).NextDelay(1, 0)
 	middle, _ := fixedRand(p, 0.5).NextDelay(1, 0)
@@ -71,8 +71,8 @@ func TestRetryPolicy_JitterStaysWithinItsBounds(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_RealRandomnessStaysInRange(t *testing.T) {
-	p := NewRetryPolicy([]time.Duration{time.Minute})
+func TestPolicy_RealRandomnessStaysInRange(t *testing.T) {
+	p := NewPolicy([]time.Duration{time.Minute})
 	seen := map[time.Duration]bool{}
 	for i := 0; i < 200; i++ {
 		d, _ := p.NextDelay(1, 0)
@@ -86,8 +86,8 @@ func TestRetryPolicy_RealRandomnessStaysInRange(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_HonoursRetryAfter(t *testing.T) {
-	p := fixedRand(NewRetryPolicy([]time.Duration{time.Minute}), 0.5)
+func TestPolicy_HonoursRetryAfter(t *testing.T) {
+	p := fixedRand(NewPolicy([]time.Duration{time.Minute}), 0.5)
 
 	cases := []struct {
 		name       string
@@ -97,7 +97,7 @@ func TestRetryPolicy_HonoursRetryAfter(t *testing.T) {
 		{"absent", 0, time.Minute},
 		{"asks for longer than our backoff", 10 * time.Minute, 10 * time.Minute},
 		{"asks for less than our backoff: ignored, we do not hammer", 5 * time.Second, time.Minute},
-		{"absurdly long: capped", 100 * time.Hour, defaultMaxRetryAfter},
+		{"absurdly long: capped", 100 * time.Hour, DefaultMaxRetryAfter},
 		{"negative: ignored", -time.Hour, time.Minute},
 	}
 	for _, c := range cases {
@@ -110,12 +110,34 @@ func TestRetryPolicy_HonoursRetryAfter(t *testing.T) {
 	}
 }
 
-func TestRetryPolicy_DoesNotShareItsScheduleWithTheCaller(t *testing.T) {
+func TestPolicy_DoesNotShareItsScheduleWithTheCaller(t *testing.T) {
 	schedule := []time.Duration{time.Minute}
-	p := fixedRand(NewRetryPolicy(schedule), 0.5)
+	p := fixedRand(NewPolicy(schedule), 0.5)
 	schedule[0] = time.Hour // mutating the caller's slice afterwards must not change the policy
 
 	if d, _ := p.NextDelay(1, 0); d != time.Minute {
 		t.Fatalf("delay = %v, the policy must keep its own copy of the schedule", d)
+	}
+}
+
+func TestPolicy_WithJitterZeroGivesExactDelays(t *testing.T) {
+	p := NewPolicy([]time.Duration{time.Minute}).WithJitter(0)
+	for i := 0; i < 50; i++ { // real randomness underneath: zero jitter must still be exact
+		if d, _ := p.NextDelay(1, 0); d != time.Minute {
+			t.Fatalf("delay = %v, want exactly 1m with no jitter", d)
+		}
+	}
+}
+
+func TestPolicy_WithJitterDoesNotChangeTheOriginal(t *testing.T) {
+	original := NewPolicy([]time.Duration{time.Minute})
+	_ = original.WithJitter(0)
+	seen := map[time.Duration]bool{}
+	for i := 0; i < 50; i++ {
+		d, _ := original.NextDelay(1, 0)
+		seen[d] = true
+	}
+	if len(seen) < 5 {
+		t.Fatal("WithJitter must return a copy and leave the original's jitter alone")
 	}
 }

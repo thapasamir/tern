@@ -1,4 +1,4 @@
-package delivery
+package dispatch
 
 import (
 	"fmt"
@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/samirthapa/tern/internal/features/delivery"
+	"github.com/samirthapa/tern/internal/features/delivery/sender"
 	"github.com/samirthapa/tern/internal/shared/ptr"
 )
 
@@ -14,8 +16,8 @@ import (
 const maxErrorLen = 500
 
 // newAttemptRecord turns a send result and the verdict on it into the record to persist.
-func newAttemptRecord(deliveryID uuid.UUID, res SendResult, v verdict, started, finished time.Time) AttemptRecord {
-	rec := AttemptRecord{
+func newAttemptRecord(deliveryID uuid.UUID, res sender.Result, v verdict, started, finished time.Time) delivery.AttemptRecord {
+	rec := delivery.AttemptRecord{
 		DeliveryID: deliveryID,
 		Outcome:    v.outcome,
 		Error:      failureMessage(res),
@@ -36,10 +38,10 @@ func newAttemptRecord(deliveryID uuid.UUID, res SendResult, v verdict, started, 
 }
 
 // failureMessage explains why an attempt failed, or is nil if it did not.
-func failureMessage(res SendResult) *string {
+func failureMessage(res sender.Result) *string {
 	switch {
 	case res.Err != nil:
-		return ptr.To(truncate(sanitize(res.Err.Error()), maxErrorLen))
+		return ptr.To(truncate(sender.Sanitize(res.Err.Error()), maxErrorLen))
 	case !isSuccess(res.StatusCode):
 		return ptr.To(fmt.Sprintf("endpoint responded with HTTP %d", res.StatusCode))
 	default:

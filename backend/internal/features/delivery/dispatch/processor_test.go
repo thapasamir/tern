@@ -1,4 +1,4 @@
-package delivery
+package dispatch
 
 import (
 	"context"
@@ -12,6 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/samirthapa/tern/internal/features/delivery"
+	"github.com/samirthapa/tern/internal/features/delivery/retry"
+	"github.com/samirthapa/tern/internal/features/delivery/sender"
 	"github.com/samirthapa/tern/internal/shared/ids"
 	"github.com/samirthapa/tern/internal/shared/signing"
 	"github.com/samirthapa/tern/internal/shared/testutil"
@@ -26,7 +29,7 @@ type processorFixture struct {
 	repo   *fakeRepo
 	sender *fakeSender
 	health *fakeHealth
-	work   Work
+	work   delivery.Work
 }
 
 // newFixture returns a Processor holding one pending delivery, on its first attempt, to an active
@@ -37,11 +40,11 @@ func newFixture(t *testing.T) *processorFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	work := Work{
+	work := delivery.Work{
 		DeliveryID:     ids.New(),
 		TenantID:       uuid.New(),
 		EndpointID:     ids.New(),
-		Status:         StatusPending,
+		Status:         delivery.StatusPending,
 		EventID:        ids.New(),
 		EventType:      "invoice.paid",
 		Payload:        json.RawMessage(`{"amount": 42}`),
@@ -51,19 +54,19 @@ func newFixture(t *testing.T) *processorFixture {
 		EndpointActive: true,
 	}
 	repo := newFakeRepo()
-	sender := &fakeSender{result: SendResult{StatusCode: 200, Duration: 40 * time.Millisecond}}
+	send := &fakeSender{result: sender.Result{StatusCode: 200, Duration: 40 * time.Millisecond}}
 	health := &fakeHealth{}
 	repo.work[work.DeliveryID] = work
 
-	policy := fixedRand(NewRetryPolicy([]time.Duration{time.Minute, 5 * time.Minute}), 0.5)
-	p := NewProcessor(repo, sender, health, ProcessorConfig{Retry: policy, AutoDisableAfter: testAutoDisableAfter})
+	policy := retry.NewPolicy([]time.Duration{time.Minute, 5 * time.Minute}).WithJitter(0)
+	p := NewProcessor(repo, send, health, ProcessorConfig{Retry: policy, AutoDisableAfter: testAutoDisableAfter})
 	p.now = func() time.Time { return testNow }
 	p.log = testutil.QuietLogger()
-	return &processorFixture{proc: p, repo: repo, sender: sender, health: health, work: work}
+	return &processorFixture{proc: p, repo: repo, sender: send, health: health, work: work}
 }
 
 // setWork changes the delivery the fixture's repository holds.
-func (f *processorFixture) setWork(mutate func(*Work)) {
+func (f *processorFixture) setWork(mutate func(*delivery.Work)) {
 	mutate(&f.work)
 	f.repo.work[f.work.DeliveryID] = f.work
 }
@@ -79,7 +82,7 @@ func (f *processorFixture) process(t *testing.T) time.Time {
 }
 
 // onlyRecord asserts exactly one attempt was recorded and returns it.
-func (f *processorFixture) onlyRecord(t *testing.T) AttemptRecord {
+func (f *processorFixture) onlyRecord(t *testing.T) delivery.AttemptRecord {
 	t.Helper()
 	if len(f.repo.recorded) != 1 {
 		t.Fatalf("recorded %d attempts, want 1", len(f.repo.recorded))
@@ -94,7 +97,7 @@ func TestProcess_Success(t *testing.T) {
 	}
 
 	rec := f.onlyRecord(t)
-	if rec.Outcome != StatusSucceeded || rec.RetryAt != nil || rec.Error != nil || rec.StatusCode == nil || *rec.StatusCode != 200 {
+	if rec.Outcome != delivery.StatusSucceeded || rec.RetryAt != nil || rec.Error != nil || rec.StatusCode == nil || *rec.StatusCode != 200 {
 		t.Fatalf("record = %+v, want a succeeded attempt with status 200 and no error", rec)
 	}
 	if rec.DeliveryID != f.work.DeliveryID || rec.Duration != 40*time.Millisecond || !rec.StartedAt.Equal(testNow) {
@@ -162,8 +165,8 @@ func TestProcess_AFailedAttemptIsRetriedOnTheSchedule(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t)
-			f.setWork(func(w *Work) { w.AttemptCount = c.attemptsSoFar })
-			f.sender.result = SendResult{StatusCode: 500, Body: "kaput"}
+			f.setWork(func(w *delivery.Work) { w.AttemptCount = c.attemptsSoFar })
+			f.sender.result = sender.Result{StatusCode: 500, Body: "kaput"}
 
 			retryAt := f.process(t)
 
@@ -172,7 +175,7 @@ func TestProcess_AFailedAttemptIsRetriedOnTheSchedule(t *testing.T) {
 				t.Fatalf("asked to run again at %v, want %v", retryAt, want)
 			}
 			rec := f.onlyRecord(t)
-			if rec.Outcome != StatusPending || rec.RetryAt == nil || !rec.RetryAt.Equal(want) {
+			if rec.Outcome != delivery.StatusPending || rec.RetryAt == nil || !rec.RetryAt.Equal(want) {
 				t.Fatalf("record = %+v, want a pending delivery with its retry at %v", rec, want)
 			}
 			if rec.Error == nil || *rec.Error != "endpoint responded with HTTP 500" || *rec.StatusCode != 500 || *rec.ResponseBody != "kaput" {
@@ -184,20 +187,20 @@ func TestProcess_AFailedAttemptIsRetriedOnTheSchedule(t *testing.T) {
 
 func TestProcess_TheLastAttemptFailsTheDeliveryForGood(t *testing.T) {
 	f := newFixture(t)
-	f.setWork(func(w *Work) { w.AttemptCount = 2 }) // the schedule allows three attempts in all
-	f.sender.result = SendResult{StatusCode: 500}
+	f.setWork(func(w *delivery.Work) { w.AttemptCount = 2 }) // the schedule allows three attempts in all
+	f.sender.result = sender.Result{StatusCode: 500}
 
 	if retryAt := f.process(t); !retryAt.IsZero() {
 		t.Fatalf("asked to run again at %v after the last attempt", retryAt)
 	}
 	rec := f.onlyRecord(t)
-	if rec.Outcome != StatusFailed || rec.RetryAt != nil {
+	if rec.Outcome != delivery.StatusFailed || rec.RetryAt != nil {
 		t.Fatalf("record = %+v, want a final failure with no retry", rec)
 	}
 }
 
 func TestProcess_EveryKindOfFailureIsRetried(t *testing.T) {
-	cases := map[string]SendResult{
+	cases := map[string]sender.Result{
 		"server error":        {StatusCode: 500},
 		"bad gateway":         {StatusCode: 502},
 		"client error":        {StatusCode: 404},
@@ -205,7 +208,7 @@ func TestProcess_EveryKindOfFailureIsRetried(t *testing.T) {
 		"redirect":            {StatusCode: 302},
 		"timeout":             {Err: errors.New("context deadline exceeded")},
 		"connection refused":  {Err: errors.New("dial tcp: connection refused")},
-		"blocked destination": {Err: errBlockedAddress},
+		"blocked destination": {Err: sender.ErrBlockedAddress},
 	}
 	for name, result := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -214,7 +217,7 @@ func TestProcess_EveryKindOfFailureIsRetried(t *testing.T) {
 			if retryAt := f.process(t); retryAt.IsZero() {
 				t.Fatal("a transient failure must be retried")
 			}
-			if rec := f.onlyRecord(t); rec.Outcome != StatusPending {
+			if rec := f.onlyRecord(t); rec.Outcome != delivery.StatusPending {
 				t.Fatalf("outcome = %s, want pending", rec.Outcome)
 			}
 		})
@@ -224,9 +227,9 @@ func TestProcess_EveryKindOfFailureIsRetried(t *testing.T) {
 func TestProcess_2xxStatusesAreAllSuccessesAndNeverRetried(t *testing.T) {
 	for _, status := range []int{200, 201, 202, 204, 299} {
 		f := newFixture(t)
-		f.sender.result = SendResult{StatusCode: status}
+		f.sender.result = sender.Result{StatusCode: status}
 		retryAt := f.process(t)
-		if rec := f.onlyRecord(t); rec.Outcome != StatusSucceeded || !retryAt.IsZero() {
+		if rec := f.onlyRecord(t); rec.Outcome != delivery.StatusSucceeded || !retryAt.IsZero() {
 			t.Errorf("status %d: outcome %s, retry %v; want succeeded and no retry", status, rec.Outcome, retryAt)
 		}
 	}
@@ -242,14 +245,14 @@ func TestProcess_HonoursRetryAfterOnlyForTooBusyResponses(t *testing.T) {
 		{"429 asks for longer than the backoff", 429, 10 * time.Minute, 10 * time.Minute},
 		{"503 asks for longer than the backoff", 503, 10 * time.Minute, 10 * time.Minute},
 		{"429 asks for less than the backoff: we keep our own", 429, 5 * time.Second, time.Minute},
-		{"429 asks for an absurd wait: capped", 429, 1000 * time.Hour, defaultMaxRetryAfter},
+		{"429 asks for an absurd wait: capped", 429, 1000 * time.Hour, retry.DefaultMaxRetryAfter},
 		{"a 500 with a Retry-After header: ignored", 500, 10 * time.Minute, time.Minute},
 		{"a 429 without the header", 429, 0, time.Minute},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFixture(t)
-			f.sender.result = SendResult{StatusCode: c.status, RetryAfter: c.retryAfter}
+			f.sender.result = sender.Result{StatusCode: c.status, RetryAfter: c.retryAfter}
 			retryAt := f.process(t)
 			if want := testNow.Add(c.wantDelay); !retryAt.Equal(want) {
 				t.Fatalf("retry at %v, want %v", retryAt, want)
@@ -260,7 +263,7 @@ func TestProcess_HonoursRetryAfterOnlyForTooBusyResponses(t *testing.T) {
 
 func TestProcess_NetworkErrorsAreLoggedWithoutAStatusCode(t *testing.T) {
 	f := newFixture(t)
-	f.sender.result = SendResult{Err: errors.New("dial tcp: connection refused")}
+	f.sender.result = sender.Result{Err: errors.New("dial tcp: connection refused")}
 	f.process(t)
 
 	rec := f.onlyRecord(t)
@@ -271,7 +274,7 @@ func TestProcess_NetworkErrorsAreLoggedWithoutAStatusCode(t *testing.T) {
 
 func TestProcess_LongErrorsAreTruncatedWithoutBreakingUTF8(t *testing.T) {
 	f := newFixture(t)
-	f.sender.result = SendResult{Err: errors.New(strings.Repeat("é", maxErrorLen))} // 2 bytes each
+	f.sender.result = sender.Result{Err: errors.New(strings.Repeat("é", maxErrorLen))} // 2 bytes each
 	f.process(t)
 
 	msg := *f.onlyRecord(t).Error
@@ -283,7 +286,7 @@ func TestProcess_LongErrorsAreTruncatedWithoutBreakingUTF8(t *testing.T) {
 func TestProcess_NeverRetriesEarly(t *testing.T) {
 	f := newFixture(t)
 	dueAt := testNow.Add(10 * time.Minute)
-	f.setWork(func(w *Work) { w.AttemptCount, w.NextAttemptAt = 1, &dueAt })
+	f.setWork(func(w *delivery.Work) { w.AttemptCount, w.NextAttemptAt = 1, &dueAt })
 
 	retryAt := f.process(t)
 	if !retryAt.Equal(dueAt) {
@@ -297,10 +300,10 @@ func TestProcess_NeverRetriesEarly(t *testing.T) {
 func TestProcess_ADueRetryIsAttemptedNormally(t *testing.T) {
 	f := newFixture(t)
 	dueAt := testNow.Add(-time.Second)
-	f.setWork(func(w *Work) { w.AttemptCount, w.NextAttemptAt = 1, &dueAt })
+	f.setWork(func(w *delivery.Work) { w.AttemptCount, w.NextAttemptAt = 1, &dueAt })
 
 	f.process(t)
-	if len(f.sender.requests) != 1 || f.onlyRecord(t).Outcome != StatusSucceeded {
+	if len(f.sender.requests) != 1 || f.onlyRecord(t).Outcome != delivery.StatusSucceeded {
 		t.Fatal("a retry that has come due must be attempted")
 	}
 }
@@ -309,13 +312,13 @@ func TestProcess_ADueRetryIsAttemptedNormally(t *testing.T) {
 
 func TestProcess_Gone_FailsAtOnceAndDisablesTheEndpoint(t *testing.T) {
 	f := newFixture(t)
-	f.sender.result = SendResult{StatusCode: http.StatusGone}
+	f.sender.result = sender.Result{StatusCode: http.StatusGone}
 	f.health.disableOnDisable = true
 
 	if retryAt := f.process(t); !retryAt.IsZero() {
 		t.Fatalf("a 410 must not be retried, got a retry at %v", retryAt)
 	}
-	if rec := f.onlyRecord(t); rec.Outcome != StatusFailed || rec.RetryAt != nil {
+	if rec := f.onlyRecord(t); rec.Outcome != delivery.StatusFailed || rec.RetryAt != nil {
 		t.Fatalf("record = %+v, want a final failure", rec)
 	}
 	if len(f.health.disables) != 1 || f.health.disables[0].reason != reasonGone || f.health.disables[0].endpointID != f.work.EndpointID {
@@ -331,7 +334,7 @@ func TestProcess_Gone_FailsAtOnceAndDisablesTheEndpoint(t *testing.T) {
 
 func TestProcess_EachFailedAttemptIsCountedAgainstTheEndpoint(t *testing.T) {
 	f := newFixture(t)
-	f.sender.result = SendResult{StatusCode: 500}
+	f.sender.result = sender.Result{StatusCode: 500}
 	f.process(t)
 
 	if len(f.health.failures) != 1 || f.health.failures[0].endpointID != f.work.EndpointID ||
@@ -345,8 +348,8 @@ func TestProcess_EachFailedAttemptIsCountedAgainstTheEndpoint(t *testing.T) {
 
 func TestProcess_TheFinalFailureIsCountedToo(t *testing.T) {
 	f := newFixture(t)
-	f.setWork(func(w *Work) { w.AttemptCount = 2 })
-	f.sender.result = SendResult{StatusCode: 500}
+	f.setWork(func(w *delivery.Work) { w.AttemptCount = 2 })
+	f.sender.result = sender.Result{StatusCode: 500}
 	f.process(t)
 	if len(f.health.failures) != 1 {
 		t.Fatalf("failures = %d, want the exhausted delivery counted too", len(f.health.failures))
@@ -355,7 +358,7 @@ func TestProcess_TheFinalFailureIsCountedToo(t *testing.T) {
 
 func TestProcess_WhenTheEndpointGetsDisabledItsPendingDeliveriesAreFailed(t *testing.T) {
 	f := newFixture(t)
-	f.sender.result = SendResult{StatusCode: 500}
+	f.sender.result = sender.Result{StatusCode: 500}
 	f.health.disableOnFailure = true
 
 	f.process(t)
@@ -371,7 +374,7 @@ func TestProcess_WhenTheEndpointGetsDisabledItsPendingDeliveriesAreFailed(t *tes
 func TestProcess_HealthTrackingIsBestEffort(t *testing.T) {
 	t.Run("a failing health update does not fail the job", func(t *testing.T) {
 		f := newFixture(t)
-		f.sender.result = SendResult{StatusCode: 500}
+		f.sender.result = sender.Result{StatusCode: 500}
 		f.health.err = errors.New("db down")
 		retryAt := f.process(t) // fails the test itself if Process returns an error
 		if retryAt.IsZero() {
@@ -383,7 +386,7 @@ func TestProcess_HealthTrackingIsBestEffort(t *testing.T) {
 	})
 	t.Run("failing to fail the pending deliveries does not fail the job", func(t *testing.T) {
 		f := newFixture(t)
-		f.sender.result = SendResult{StatusCode: 500}
+		f.sender.result = sender.Result{StatusCode: 500}
 		f.health.disableOnFailure = true
 		f.repo.failPendingErr = errors.New("db down")
 		f.process(t)
@@ -394,7 +397,7 @@ func TestProcess_HealthTrackingIsBestEffort(t *testing.T) {
 
 func TestProcess_DisabledEndpointFailsWithoutSendingOrRetrying(t *testing.T) {
 	f := newFixture(t)
-	f.setWork(func(w *Work) { w.EndpointActive = false })
+	f.setWork(func(w *delivery.Work) { w.EndpointActive = false })
 
 	if retryAt := f.process(t); !retryAt.IsZero() {
 		t.Fatalf("a disabled endpoint must not be retried, got %v", retryAt)
@@ -403,7 +406,7 @@ func TestProcess_DisabledEndpointFailsWithoutSendingOrRetrying(t *testing.T) {
 		t.Fatal("a request was sent to a disabled endpoint")
 	}
 	rec := f.onlyRecord(t)
-	if rec.Outcome != StatusFailed || rec.Error == nil || *rec.Error != "endpoint is disabled" {
+	if rec.Outcome != delivery.StatusFailed || rec.Error == nil || *rec.Error != "endpoint is disabled" {
 		t.Fatalf("record = %+v, want failed with \"endpoint is disabled\"", rec)
 	}
 	if len(f.health.failures)+len(f.health.successes)+len(f.health.disables) != 0 {
@@ -413,7 +416,7 @@ func TestProcess_DisabledEndpointFailsWithoutSendingOrRetrying(t *testing.T) {
 
 func TestProcess_UnusableSecretFailsWithoutSendingOrRetrying(t *testing.T) {
 	f := newFixture(t)
-	f.setWork(func(w *Work) { w.EndpointSecret = "not-a-valid-secret" })
+	f.setWork(func(w *delivery.Work) { w.EndpointSecret = "not-a-valid-secret" })
 
 	if retryAt := f.process(t); !retryAt.IsZero() {
 		t.Fatalf("retrying cannot fix a broken secret, got a retry at %v", retryAt)
@@ -421,7 +424,7 @@ func TestProcess_UnusableSecretFailsWithoutSendingOrRetrying(t *testing.T) {
 	if len(f.sender.requests) != 0 {
 		t.Fatal("an unsigned request was sent")
 	}
-	if rec := f.onlyRecord(t); rec.Outcome != StatusFailed || !strings.Contains(*rec.Error, "sign payload") {
+	if rec := f.onlyRecord(t); rec.Outcome != delivery.StatusFailed || !strings.Contains(*rec.Error, "sign payload") {
 		t.Fatalf("record = %+v, want a signing failure", rec)
 	}
 	if len(f.health.failures) != 0 {
@@ -432,9 +435,9 @@ func TestProcess_UnusableSecretFailsWithoutSendingOrRetrying(t *testing.T) {
 // ---- duplicates, races and infrastructure errors -------------------------------------------
 
 func TestProcess_SkipsDeliveriesThatAreAlreadyDone(t *testing.T) {
-	for _, status := range []Status{StatusSucceeded, StatusFailed} {
+	for _, status := range []delivery.Status{delivery.StatusSucceeded, delivery.StatusFailed} {
 		f := newFixture(t)
-		f.setWork(func(w *Work) { w.Status = status })
+		f.setWork(func(w *delivery.Work) { w.Status = status })
 
 		if retryAt := f.process(t); !retryAt.IsZero() {
 			t.Errorf("a %s delivery asked to run again", status)
@@ -483,7 +486,7 @@ func TestProcess_InfrastructureFailuresAreReturnedSoTheJobIsRedelivered(t *testi
 
 func TestProcess_LosingTheRaceToRecordIsNotAnErrorAndLeavesTheFollowUpToTheWinner(t *testing.T) {
 	f := newFixture(t)
-	f.sender.result = SendResult{StatusCode: 500}
+	f.sender.result = sender.Result{StatusCode: 500}
 	f.repo.notRecorded = true // another worker completed the delivery first
 
 	if retryAt := f.process(t); !retryAt.IsZero() {

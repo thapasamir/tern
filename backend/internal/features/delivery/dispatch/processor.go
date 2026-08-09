@@ -1,4 +1,8 @@
-package delivery
+// Package dispatch is the worker side of deliveries: it makes the attempts that the queue hands
+// out, decides what each result means (succeeded, retry later, or failed for good), records it,
+// and tells the endpoint how it is doing. It builds on the delivery package, which owns the
+// data model and the API; the delivery package knows nothing of this one.
+package dispatch
 
 import (
 	"context"
@@ -8,6 +12,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/samirthapa/tern/internal/features/delivery"
+	"github.com/samirthapa/tern/internal/features/delivery/retry"
+	"github.com/samirthapa/tern/internal/features/delivery/sender"
 )
 
 // noRetry is the zero time. Process returns it to say "this job is finished, do not run it again".
@@ -15,9 +23,14 @@ var noRetry time.Time
 
 var errEndpointDisabled = errors.New("endpoint is disabled")
 
+// Sender performs the HTTP request of a delivery attempt. It is implemented by sender.Client.
+type Sender interface {
+	Send(ctx context.Context, req sender.Request) sender.Result
+}
+
 // ProcessorConfig holds the reliability policy of the processor.
 type ProcessorConfig struct {
-	Retry RetryPolicy
+	Retry retry.Policy
 	// AutoDisableAfter is how many failed attempts in a row disable an endpoint.
 	AutoDisableAfter int
 }
@@ -32,7 +45,7 @@ type ProcessorConfig struct {
 //	record.go     turning the outcome into the database record
 //	health.go     reporting the outcome to the endpoint, which may disable it
 type Processor struct {
-	repo   Repository
+	repo   delivery.Repository
 	sender Sender
 	health EndpointHealth
 	cfg    ProcessorConfig
@@ -40,8 +53,8 @@ type Processor struct {
 	log    *slog.Logger
 }
 
-func NewProcessor(repo Repository, sender Sender, health EndpointHealth, cfg ProcessorConfig) *Processor {
-	return &Processor{repo: repo, sender: sender, health: health, cfg: cfg, now: time.Now, log: slog.Default()}
+func NewProcessor(repo delivery.Repository, send Sender, health EndpointHealth, cfg ProcessorConfig) *Processor {
+	return &Processor{repo: repo, sender: send, health: health, cfg: cfg, now: time.Now, log: slog.Default()}
 }
 
 // Process makes one attempt for the delivery named by jobID and records the outcome. It returns
@@ -72,7 +85,7 @@ func (p *Processor) Process(ctx context.Context, jobID string) (time.Time, error
 	result := p.attempt(ctx, work, started)
 	finished := p.now()
 	v := p.judge(work, result, finished)
-	rec := newAttemptRecord(work.DeliveryID, result.SendResult, v, started, finished)
+	rec := newAttemptRecord(work.DeliveryID, result.Result, v, started, finished)
 
 	recorded, err := p.repo.RecordAttempt(ctx, rec)
 	if err != nil {
@@ -91,27 +104,27 @@ func (p *Processor) Process(ctx context.Context, jobID string) (time.Time, error
 // malformed, its delivery no longer exists, or the delivery already finished (a duplicate job).
 // Those jobs must be acknowledged and dropped, not retried, so they are not errors. An error is
 // returned only when the database could not be read, which is worth trying again later.
-func (p *Processor) loadWork(ctx context.Context, jobID string) (work Work, ok bool, err error) {
+func (p *Processor) loadWork(ctx context.Context, jobID string) (work delivery.Work, ok bool, err error) {
 	id, err := uuid.Parse(jobID)
 	if err != nil {
 		p.log.Warn("dropping job with a malformed id", "job", jobID)
-		return Work{}, false, nil
+		return delivery.Work{}, false, nil
 	}
 
 	work, err = p.repo.GetWork(ctx, id)
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, delivery.ErrNotFound):
 		p.log.Warn("dropping job for a delivery that no longer exists", "delivery_id", id)
-		return Work{}, false, nil
+		return delivery.Work{}, false, nil
 	case err != nil:
-		return Work{}, false, fmt.Errorf("load delivery %s: %w", id, err)
+		return delivery.Work{}, false, fmt.Errorf("load delivery %s: %w", id, err)
 	}
-	return work, work.Status == StatusPending, nil
+	return work, work.Status == delivery.StatusPending, nil
 }
 
 // attemptResult is what an attempt produced.
 type attemptResult struct {
-	SendResult
+	sender.Result
 	// skipped is set when no request was made, for a reason that retrying cannot fix: the
 	// endpoint is disabled, or its secret is unusable.
 	skipped bool
@@ -119,11 +132,11 @@ type attemptResult struct {
 
 // skipped is the result of an attempt that could not be made, for the given reason.
 func skipped(reason error) attemptResult {
-	return attemptResult{SendResult: SendResult{Err: reason}, skipped: true}
+	return attemptResult{Result: sender.Result{Err: reason}, skipped: true}
 }
 
 // attempt sends the delivery's request, unless there is no point in doing so.
-func (p *Processor) attempt(ctx context.Context, w Work, at time.Time) attemptResult {
+func (p *Processor) attempt(ctx context.Context, w delivery.Work, at time.Time) attemptResult {
 	if !w.EndpointActive {
 		return skipped(errEndpointDisabled)
 	}
@@ -131,10 +144,10 @@ func (p *Processor) attempt(ctx context.Context, w Work, at time.Time) attemptRe
 	if err != nil {
 		return skipped(err)
 	}
-	return attemptResult{SendResult: p.sender.Send(ctx, req)}
+	return attemptResult{Result: p.sender.Send(ctx, req)}
 }
 
-func (p *Processor) logAttempt(w Work, res attemptResult, rec AttemptRecord, recorded bool) {
+func (p *Processor) logAttempt(w delivery.Work, res attemptResult, rec delivery.AttemptRecord, recorded bool) {
 	p.log.Info("delivery attempt finished",
 		"delivery_id", w.DeliveryID,
 		"event_id", w.EventID,
