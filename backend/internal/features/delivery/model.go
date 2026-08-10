@@ -29,10 +29,12 @@ type Delivery struct {
 	AttemptCount int
 	// NextAttemptAt is when a failed delivery is due for its next retry; nil otherwise.
 	NextAttemptAt *time.Time
-	EnqueuedAt    *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	CompletedAt   *time.Time
+	// ReplayedFrom is the delivery this one repeats, for a delivery created by a replay.
+	ReplayedFrom *uuid.UUID
+	EnqueuedAt   *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	CompletedAt  *time.Time
 }
 
 // Attempt is the record of one HTTP request made for a delivery.
@@ -82,4 +84,22 @@ type AttemptRecord struct {
 	Duration     time.Duration
 	StartedAt    time.Time
 	FinishedAt   time.Time
+}
+
+// ReplaySource is a delivery together with what a replay needs to know about its endpoint.
+type ReplaySource struct {
+	DeliveryID     uuid.UUID
+	TenantID       uuid.UUID
+	EventID        uuid.UUID
+	EndpointID     uuid.UUID
+	Status         Status
+	EndpointActive bool
+}
+
+// ReplayBatch is the outcome of replaying many failed deliveries at once.
+type ReplayBatch struct {
+	// IDs are the new deliveries that were created.
+	IDs []uuid.UUID
+	// HasMore is true when more failed deliveries matched than one call replays.
+	HasMore bool
 }

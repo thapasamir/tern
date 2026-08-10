@@ -39,18 +39,6 @@ wait_for_http "$BASE/healthz" || { echo "API did not start"; cat "$LOG_DIR/api.l
 # GAPS is a Python expression over a delivery (`d`): the seconds between its consecutive attempts.
 GAPS="[(b - a).total_seconds() for ts in [[__import__('datetime').datetime.fromisoformat(x['started_at'].replace('Z', '+00:00')) for x in d['attempts']]] for a, b in zip(ts, ts[1:])]"
 
-# send_event TYPE  -> sets EVENT_ID
-send_event() {
-  call POST /v1/events "$KEY" "{\"type\":\"$1\",\"payload\":{\"n\":1}}"
-  EVENT_ID=$(field 'd["id"]')
-}
-
-# delivery_done EVENT_ID ENDPOINT_ID  -> true once that delivery is no longer pending
-delivery_done() {
-  call GET "/v1/deliveries/$(delivery_to "$1" "$2")" "$KEY"
-  [[ $(field 'd["status"]') != "pending" ]]
-}
-
 # endpoint_field ENDPOINT_ID PYTHON_EXPR  -> reads the endpoint and evaluates the expression on it
 endpoint_field() {
   call GET "/v1/endpoints/$1" "$KEY"

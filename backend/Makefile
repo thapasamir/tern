@@ -62,9 +62,11 @@ migrate-new:
 	$(GOOSE) -dir migrations create $(name) sql
 
 # End-to-end checks against real Postgres and Redis (needs: make up migrate-up).
-# smoke.sh covers the HTTP API; smoke_delivery.sh and smoke_retries.sh cover delivery and its
-# reliability with a real worker and receiver.
+# smoke.sh covers the HTTP API; the others run a real worker and receiver: smoke_delivery.sh covers
+# delivery, smoke_retries.sh its reliability, smoke_limits.sh the rate limits, smoke_replay.sh replay.
 smoke:
 	./scripts/smoke.sh
 	./scripts/smoke_delivery.sh
 	./scripts/smoke_retries.sh
+	./scripts/smoke_limits.sh
+	./scripts/smoke_replay.sh

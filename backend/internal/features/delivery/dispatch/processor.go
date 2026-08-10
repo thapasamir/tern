@@ -33,6 +33,8 @@ type ProcessorConfig struct {
 	Retry retry.Policy
 	// AutoDisableAfter is how many failed attempts in a row disable an endpoint.
 	AutoDisableAfter int
+	// Throttle, if set, limits how fast deliveries are sent to each endpoint.
+	Throttle Throttle
 }
 
 // Processor makes the delivery attempts. The worker calls Process for every job it claims.
@@ -44,6 +46,7 @@ type ProcessorConfig struct {
 //	verdict.go    deciding what an attempt's result means: succeed, retry or give up
 //	record.go     turning the outcome into the database record
 //	health.go     reporting the outcome to the endpoint, which may disable it
+//	throttle.go   holding deliveries back when an endpoint is receiving too many
 type Processor struct {
 	repo   delivery.Repository
 	sender Sender
@@ -80,6 +83,12 @@ func (p *Processor) Process(ctx context.Context, jobID string) (time.Time, error
 		// The job came back before the retry is due, e.g. after its lease expired because the
 		// worker could not reschedule it. Never retry early: put it back where it belongs.
 		return *due, nil
+	}
+	if wait := p.holdBack(ctx, work); wait > 0 {
+		// The endpoint is busy. Hold the delivery back without counting an attempt: being throttled
+		// says nothing about the endpoint's health and must not eat into the retries.
+		p.log.Debug("delivery held back to protect the endpoint", "delivery_id", work.DeliveryID, "wait", wait)
+		return started.Add(wait), nil
 	}
 
 	result := p.attempt(ctx, work, started)

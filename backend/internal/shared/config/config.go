@@ -38,6 +38,13 @@ type Config struct {
 	AutoDisableAfter int
 	// ReconcileInterval is how often the worker looks for deliveries whose queue job was lost.
 	ReconcileInterval time.Duration
+
+	// EventsPerSecond limits how many events each tenant may send per second; bursts of twice
+	// that are allowed. Zero means unlimited.
+	EventsPerSecond int
+	// EndpointDeliveriesPerSecond limits how many deliveries per second are sent to any single
+	// endpoint, which protects the customer's server from being flooded. Zero means unlimited.
+	EndpointDeliveriesPerSecond int
 }
 
 const (
@@ -54,6 +61,10 @@ const (
 	noRetriesValue        = "none"
 	defaultAutoDisable    = 20
 	defaultReconcileEvery = 5 * time.Minute
+
+	maxRatePerSecond                   = 100_000
+	defaultEventsPerSecond             = 100
+	defaultEndpointDeliveriesPerSecond = 25
 )
 
 // defaultRetrySchedule gives a delivery 8 attempts over roughly 28 hours, which rides out most
@@ -97,6 +108,12 @@ func Load() (Config, error) {
 	if cfg.ReconcileInterval, err = envDuration("RECONCILE_INTERVAL", defaultReconcileEvery); err != nil {
 		return Config{}, err
 	}
+	if cfg.EventsPerSecond, err = envInt("RATE_LIMIT_EVENTS_PER_SECOND", defaultEventsPerSecond); err != nil {
+		return Config{}, err
+	}
+	if cfg.EndpointDeliveriesPerSecond, err = envInt("RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND", defaultEndpointDeliveriesPerSecond); err != nil {
+		return Config{}, err
+	}
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -134,6 +151,10 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: AUTO_DISABLE_AFTER must be between 1 and %d", maxAutoDisableAfter)
 	case c.ReconcileInterval < minReconcileInterval || c.ReconcileInterval > maxReconcileInterval:
 		return fmt.Errorf("config: RECONCILE_INTERVAL must be between %s and %s", minReconcileInterval, maxReconcileInterval)
+	case c.EventsPerSecond < 0 || c.EventsPerSecond > maxRatePerSecond:
+		return fmt.Errorf("config: RATE_LIMIT_EVENTS_PER_SECOND must be between 0 (unlimited) and %d", maxRatePerSecond)
+	case c.EndpointDeliveriesPerSecond < 0 || c.EndpointDeliveriesPerSecond > maxRatePerSecond:
+		return fmt.Errorf("config: RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND must be between 0 (unlimited) and %d", maxRatePerSecond)
 	}
 	for _, d := range c.RetrySchedule {
 		if d <= 0 || d > maxRetryDelay {

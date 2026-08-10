@@ -103,6 +103,23 @@ delivery_to() {
   field "next((x['id'] for x in d['data'] if x['endpoint_id'] == '$2'), 'none')"
 }
 
+# send_event TYPE  -> sends an event as $KEY and sets EVENT_ID
+send_event() {
+  call POST /v1/events "$KEY" "{\"type\":\"$1\",\"payload\":{\"n\":1}}"
+  EVENT_ID=$(field 'd["id"]')
+}
+
+# delivery_done EVENT_ID ENDPOINT_ID  -> true once that delivery is no longer pending (uses $KEY)
+delivery_done() {
+  call GET "/v1/deliveries/$(delivery_to "$1" "$2")" "$KEY"
+  [[ $(field 'd["status"]') != "pending" ]]
+}
+
+# iso_ago HOURS  -> an RFC 3339 UTC timestamp that many hours in the past
+iso_ago() {
+  python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(hours=$1)).strftime('%Y-%m-%dT%H:%M:%SZ'))"
+}
+
 finish() {
   echo
   echo "$PASS passed, $FAIL failed"

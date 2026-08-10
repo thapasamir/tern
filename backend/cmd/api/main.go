@@ -23,6 +23,7 @@ import (
 	"github.com/samirthapa/tern/internal/shared/httpx"
 	"github.com/samirthapa/tern/internal/shared/logger"
 	"github.com/samirthapa/tern/internal/shared/queue"
+	"github.com/samirthapa/tern/internal/shared/ratelimit"
 	"github.com/samirthapa/tern/internal/shared/urlguard"
 )
 
@@ -70,7 +71,11 @@ func run() error {
 	tenantMod := tenant.NewModule(pool, cfg.AdminToken)
 	endpointMod := endpoint.NewModule(pool, urlguard.NewValidator(cfg.AllowLocalEndpoints))
 	deliveryMod := delivery.NewModule(pool, queue.New(rdb, delivery.QueueName))
-	eventMod := event.NewModule(pool, deliveryMod.Service()) // events enqueue deliveries through it
+	// Each tenant may only send so many events per second; the limit is kept in Redis, so it holds
+	// across every API server.
+	limiter := ratelimit.NewRedis(rdb, "tern:ratelimit")
+	limitEvents := httpx.RateLimit(limiter, "events", ratelimit.PerSecond(float64(cfg.EventsPerSecond)), log)
+	eventMod := event.NewModule(pool, deliveryMod.Service(), limitEvents) // events enqueue deliveries through it
 	if cfg.AllowLocalEndpoints {
 		log.Warn("ALLOW_LOCAL_ENDPOINTS is on: SSRF protection is relaxed (development only)")
 	}

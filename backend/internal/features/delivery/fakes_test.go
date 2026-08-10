@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/samirthapa/tern/internal/shared/ids"
 	"github.com/samirthapa/tern/internal/shared/pagination"
 )
 
@@ -27,6 +28,15 @@ type fakeRepo struct {
 	listUnenqErr error
 	overdueErr   error
 
+	// replay
+	replaySources   map[uuid.UUID]ReplaySource // by delivery id
+	endpointActive  map[uuid.UUID]bool         // by endpoint id; absent means the endpoint does not exist
+	createdReplays  []Delivery
+	replayBatch     ReplayBatch // what ReplayFailed returns
+	replayFailedArg replayFailedArgs
+	createReplayErr error
+	replayFailedErr error
+
 	marked           [][]uuid.UUID
 	markedAt         []time.Time
 	unenqueuedCutoff time.Time
@@ -35,9 +45,52 @@ type fakeRepo struct {
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		deliveries: map[uuid.UUID]Delivery{},
-		attempts:   map[uuid.UUID][]Attempt{},
+		deliveries:     map[uuid.UUID]Delivery{},
+		attempts:       map[uuid.UUID][]Attempt{},
+		replaySources:  map[uuid.UUID]ReplaySource{},
+		endpointActive: map[uuid.UUID]bool{},
 	}
+}
+
+// replayFailedArgs records how ReplayFailed was called.
+type replayFailedArgs struct {
+	tenantID, endpointID uuid.UUID
+	since, until         time.Time
+	limit                int
+	called               bool
+}
+
+func (f *fakeRepo) GetReplaySource(_ context.Context, tenantID, id uuid.UUID) (ReplaySource, error) {
+	src, ok := f.replaySources[id]
+	if !ok || src.TenantID != tenantID {
+		return ReplaySource{}, ErrNotFound
+	}
+	return src, nil
+}
+
+func (f *fakeRepo) EndpointActive(_ context.Context, _, endpointID uuid.UUID) (bool, error) {
+	active, ok := f.endpointActive[endpointID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	return active, nil
+}
+
+func (f *fakeRepo) CreateReplay(_ context.Context, src ReplaySource, at time.Time) (Delivery, error) {
+	if f.createReplayErr != nil {
+		return Delivery{}, f.createReplayErr
+	}
+	d := Delivery{
+		ID: ids.New(), TenantID: src.TenantID, EventID: src.EventID, EndpointID: src.EndpointID,
+		Status: StatusPending, ReplayedFrom: &src.DeliveryID, CreatedAt: at, UpdatedAt: at,
+	}
+	f.createdReplays = append(f.createdReplays, d)
+	return d, nil
+}
+
+func (f *fakeRepo) ReplayFailed(_ context.Context, tenantID, endpointID uuid.UUID, since, until time.Time, limit int, _ time.Time) (ReplayBatch, error) {
+	f.replayFailedArg = replayFailedArgs{tenantID, endpointID, since, until, limit, true}
+	return f.replayBatch, f.replayFailedErr
 }
 
 func (f *fakeRepo) Get(_ context.Context, tenantID, id uuid.UUID) (Delivery, error) {

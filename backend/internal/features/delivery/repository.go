@@ -44,6 +44,16 @@ type Repository interface {
 	// ListOverdue returns pending deliveries that are due before dueBefore and were not touched
 	// since, for the reconciler that re-queues jobs lost with the queue's data.
 	ListOverdue(ctx context.Context, dueBefore time.Time, limit int) ([]uuid.UUID, error)
+
+	// GetReplaySource loads a delivery and the state of its endpoint, for deciding on a replay.
+	GetReplaySource(ctx context.Context, tenantID, deliveryID uuid.UUID) (ReplaySource, error)
+	// EndpointActive reports whether the tenant's endpoint is active; ErrNotFound if it does not exist.
+	EndpointActive(ctx context.Context, tenantID, endpointID uuid.UUID) (bool, error)
+	// CreateReplay creates a new pending delivery that repeats src.
+	CreateReplay(ctx context.Context, src ReplaySource, at time.Time) (Delivery, error)
+	// ReplayFailed creates a replay of up to limit failed deliveries of an endpoint created in
+	// [since, until) that have no replay yet, atomically.
+	ReplayFailed(ctx context.Context, tenantID, endpointID uuid.UUID, since, until time.Time, limit int, at time.Time) (ReplayBatch, error)
 }
 
 // pgRepository implements Repository on top of the sqlc-generated queries.
@@ -154,6 +164,89 @@ func (r *pgRepository) ListOverdue(ctx context.Context, dueBefore time.Time, lim
 	return rows, nil
 }
 
+func (r *pgRepository) GetReplaySource(ctx context.Context, tenantID, deliveryID uuid.UUID) (ReplaySource, error) {
+	row, err := r.q.GetReplaySource(ctx, deliverydb.GetReplaySourceParams{ID: deliveryID, TenantID: tenantID})
+	if err != nil {
+		return ReplaySource{}, database.WrapErr(err, "get replay source")
+	}
+	return ReplaySource{
+		DeliveryID:     row.ID,
+		TenantID:       row.TenantID,
+		EventID:        row.EventID,
+		EndpointID:     row.EndpointID,
+		Status:         Status(row.Status),
+		EndpointActive: row.EndpointActive,
+	}, nil
+}
+
+func (r *pgRepository) EndpointActive(ctx context.Context, tenantID, endpointID uuid.UUID) (bool, error) {
+	active, err := r.q.GetEndpointActive(ctx, deliverydb.GetEndpointActiveParams{ID: endpointID, TenantID: tenantID})
+	if err != nil {
+		return false, database.WrapErr(err, "get endpoint state")
+	}
+	return active, nil
+}
+
+func (r *pgRepository) CreateReplay(ctx context.Context, src ReplaySource, at time.Time) (Delivery, error) {
+	d := Delivery{
+		ID:           ids.New(),
+		TenantID:     src.TenantID,
+		EventID:      src.EventID,
+		EndpointID:   src.EndpointID,
+		Status:       StatusPending,
+		ReplayedFrom: &src.DeliveryID,
+		CreatedAt:    at,
+		UpdatedAt:    at,
+	}
+	if _, err := r.q.InsertReplays(ctx, []deliverydb.InsertReplaysParams{replayRow(d)}); err != nil {
+		return Delivery{}, fmt.Errorf("insert replay: %w", err)
+	}
+	return d, nil
+}
+
+func (r *pgRepository) ReplayFailed(ctx context.Context, tenantID, endpointID uuid.UUID, since, until time.Time, limit int, at time.Time) (ReplayBatch, error) {
+	var batch ReplayBatch
+	err := database.WithTx(ctx, r.pool, func(tx pgx.Tx) error {
+		q := r.q.WithTx(tx)
+
+		// Fetch one more than the limit to learn whether there is more, without a COUNT.
+		claimed, err := q.ClaimFailedForReplay(ctx, deliverydb.ClaimFailedForReplayParams{
+			TenantID: tenantID, EndpointID: endpointID, Since: since, Until: until, RowLimit: int32(limit + 1),
+		})
+		if err != nil {
+			return fmt.Errorf("claim failed deliveries: %w", err)
+		}
+		if len(claimed) > limit {
+			batch.HasMore = true
+			claimed = claimed[:limit]
+		}
+
+		rows := make([]deliverydb.InsertReplaysParams, len(claimed))
+		batch.IDs = make([]uuid.UUID, len(claimed))
+		for i, original := range claimed {
+			replay := Delivery{
+				ID: ids.New(), TenantID: tenantID, EventID: original.EventID, EndpointID: endpointID,
+				Status: StatusPending, ReplayedFrom: &claimed[i].ID, CreatedAt: at, UpdatedAt: at,
+			}
+			rows[i], batch.IDs[i] = replayRow(replay), replay.ID
+		}
+		if len(rows) > 0 {
+			if _, err := q.InsertReplays(ctx, rows); err != nil {
+				return fmt.Errorf("insert replays: %w", err)
+			}
+		}
+		return nil
+	})
+	return batch, err
+}
+
+func replayRow(d Delivery) deliverydb.InsertReplaysParams {
+	return deliverydb.InsertReplaysParams{
+		ID: d.ID, TenantID: d.TenantID, EventID: d.EventID, EndpointID: d.EndpointID,
+		Status: string(d.Status), ReplayedFrom: d.ReplayedFrom, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
+	}
+}
+
 func (r *pgRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (Delivery, error) {
 	row, err := r.q.GetDelivery(ctx, deliverydb.GetDeliveryParams{ID: id, TenantID: tenantID})
 	if err != nil {
@@ -218,6 +311,7 @@ func toDelivery(row deliverydb.Delivery) Delivery {
 		Status:        Status(row.Status),
 		AttemptCount:  int(row.AttemptCount),
 		NextAttemptAt: row.NextAttemptAt,
+		ReplayedFrom:  row.ReplayedFrom,
 		EnqueuedAt:    row.EnqueuedAt,
 		CreatedAt:     row.CreatedAt,
 		UpdatedAt:     row.UpdatedAt,

@@ -23,19 +23,18 @@ func NewModule(pool *pgxpool.Pool, urls URLValidator) *Module {
 func (m *Module) Service() *Service { return m.svc }
 
 // RegisterRoutes expects r to already be guarded by the tenant Authenticate middleware.
+//
+// Routes are registered flat rather than under r.Route("/endpoints"): the delivery feature also
+// serves /endpoints/{endpointID}/replay, and chi cannot mount two routers on the same prefix.
 func (m *Module) RegisterRoutes(r chi.Router) {
-	r.Route("/endpoints", func(r chi.Router) {
-		r.Post("/", httpx.Handle(m.ctrl.create))
-		r.Get("/", httpx.Handle(m.ctrl.list))
+	r.Post("/endpoints", httpx.Handle(m.ctrl.create))
+	r.Get("/endpoints", httpx.Handle(m.ctrl.list))
 
-		r.Route("/{endpointID}", func(r chi.Router) {
-			r.Get("/", httpx.Handle(m.ctrl.get))
-			r.Patch("/", httpx.Handle(m.ctrl.update))
-			r.Delete("/", httpx.Handle(m.ctrl.delete))
+	r.Get("/endpoints/{endpointID}", httpx.Handle(m.ctrl.get))
+	r.Patch("/endpoints/{endpointID}", httpx.Handle(m.ctrl.update))
+	r.Delete("/endpoints/{endpointID}", httpx.Handle(m.ctrl.delete))
 
-			r.Post("/rotate-secret", httpx.Handle(m.ctrl.rotateSecret))
-			r.Post("/enable", httpx.Handle(m.ctrl.enable))
-			r.Post("/disable", httpx.Handle(m.ctrl.disable))
-		})
-	})
+	r.Post("/endpoints/{endpointID}/rotate-secret", httpx.Handle(m.ctrl.rotateSecret))
+	r.Post("/endpoints/{endpointID}/enable", httpx.Handle(m.ctrl.enable))
+	r.Post("/endpoints/{endpointID}/disable", httpx.Handle(m.ctrl.disable))
 }

@@ -28,4 +28,7 @@ func (m *Module) Service() *Service { return m.svc }
 func (m *Module) RegisterRoutes(r chi.Router) {
 	r.Get("/events/{eventID}/deliveries", httpx.Handle(m.ctrl.listByEvent))
 	r.Get("/deliveries/{deliveryID}", httpx.Handle(m.ctrl.get))
+	r.Post("/deliveries/{deliveryID}/replay", httpx.Handle(m.ctrl.replay))
+	// The endpoint feature owns the other /endpoints routes (see its routes.go).
+	r.Post("/endpoints/{endpointID}/replay", httpx.Handle(m.ctrl.replayFailed))
 }

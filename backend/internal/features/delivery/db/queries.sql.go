@@ -12,6 +12,63 @@ import (
 	"github.com/google/uuid"
 )
 
+const claimFailedForReplay = `-- name: ClaimFailedForReplay :many
+SELECT d.id, d.event_id
+FROM deliveries d
+WHERE d.tenant_id = $1
+  AND d.endpoint_id = $2
+  AND d.status = 'failed'
+  AND d.created_at >= $3::timestamptz
+  AND d.created_at <  $4::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM deliveries r WHERE r.replayed_from = d.id)
+ORDER BY d.id
+LIMIT $5
+FOR UPDATE OF d SKIP LOCKED
+`
+
+type ClaimFailedForReplayParams struct {
+	TenantID   uuid.UUID
+	EndpointID uuid.UUID
+	Since      time.Time
+	Until      time.Time
+	RowLimit   int32
+}
+
+type ClaimFailedForReplayRow struct {
+	ID      uuid.UUID
+	EventID uuid.UUID
+}
+
+// The failed deliveries of an endpoint, in a time range, that have not been replayed yet, locked
+// for this transaction. Locking with SKIP LOCKED makes two simultaneous bulk replays split the
+// work instead of both replaying the same deliveries; NOT EXISTS makes a repeated call a no-op
+// for deliveries that already have a replay.
+func (q *Queries) ClaimFailedForReplay(ctx context.Context, arg ClaimFailedForReplayParams) ([]ClaimFailedForReplayRow, error) {
+	rows, err := q.db.Query(ctx, claimFailedForReplay,
+		arg.TenantID,
+		arg.EndpointID,
+		arg.Since,
+		arg.Until,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimFailedForReplayRow{}
+	for rows.Next() {
+		var i ClaimFailedForReplayRow
+		if err := rows.Scan(&i.ID, &i.EventID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const completeDelivery = `-- name: CompleteDelivery :one
 UPDATE deliveries
 SET status          = $1,
@@ -71,7 +128,7 @@ func (q *Queries) FailPendingForEndpoint(ctx context.Context, arg FailPendingFor
 }
 
 const getDelivery = `-- name: GetDelivery :one
-SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at FROM deliveries
+SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at, replayed_from FROM deliveries
 WHERE id = $1 AND tenant_id = $2
 `
 
@@ -95,6 +152,7 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (Deliv
 		&i.UpdatedAt,
 		&i.CompletedAt,
 		&i.NextAttemptAt,
+		&i.ReplayedFrom,
 	)
 	return i, err
 }
@@ -158,6 +216,64 @@ func (q *Queries) GetDeliveryWork(ctx context.Context, id uuid.UUID) (GetDeliver
 	return i, err
 }
 
+const getEndpointActive = `-- name: GetEndpointActive :one
+SELECT (status = 'active') AS active
+FROM endpoints
+WHERE id = $1 AND tenant_id = $2
+`
+
+type GetEndpointActiveParams struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+}
+
+func (q *Queries) GetEndpointActive(ctx context.Context, arg GetEndpointActiveParams) (bool, error) {
+	row := q.db.QueryRow(ctx, getEndpointActive, arg.ID, arg.TenantID)
+	var active bool
+	err := row.Scan(&active)
+	return active, err
+}
+
+const getReplaySource = `-- name: GetReplaySource :one
+
+SELECT d.id, d.tenant_id, d.event_id, d.endpoint_id, d.status,
+       (ep.status = 'active') AS endpoint_active
+FROM deliveries d
+JOIN endpoints ep ON ep.id = d.endpoint_id
+WHERE d.id = $1 AND d.tenant_id = $2
+`
+
+type GetReplaySourceParams struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+}
+
+type GetReplaySourceRow struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	EventID        uuid.UUID
+	EndpointID     uuid.UUID
+	Status         string
+	EndpointActive bool
+}
+
+// ---- Replay -------------------------------------------------------------------------------
+// A replay is a new delivery pointing back (replayed_from) at the one it repeats.
+// A delivery with what replaying it needs to know about its endpoint.
+func (q *Queries) GetReplaySource(ctx context.Context, arg GetReplaySourceParams) (GetReplaySourceRow, error) {
+	row := q.db.QueryRow(ctx, getReplaySource, arg.ID, arg.TenantID)
+	var i GetReplaySourceRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.EventID,
+		&i.EndpointID,
+		&i.Status,
+		&i.EndpointActive,
+	)
+	return i, err
+}
+
 const insertAttempt = `-- name: InsertAttempt :exec
 INSERT INTO delivery_attempts (id, delivery_id, attempt_number, status_code, error, response_body, duration_ms, started_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -186,6 +302,17 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) er
 		arg.StartedAt,
 	)
 	return err
+}
+
+type InsertReplaysParams struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	EventID      uuid.UUID
+	EndpointID   uuid.UUID
+	Status       string
+	ReplayedFrom *uuid.UUID
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 const listAttempts = `-- name: ListAttempts :many
@@ -224,7 +351,7 @@ func (q *Queries) ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Del
 }
 
 const listDeliveriesByEvent = `-- name: ListDeliveriesByEvent :many
-SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at FROM deliveries
+SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at, replayed_from FROM deliveries
 WHERE tenant_id = $1
   AND event_id = $2
   AND id < $3
@@ -266,6 +393,7 @@ func (q *Queries) ListDeliveriesByEvent(ctx context.Context, arg ListDeliveriesB
 			&i.UpdatedAt,
 			&i.CompletedAt,
 			&i.NextAttemptAt,
+			&i.ReplayedFrom,
 		); err != nil {
 			return nil, err
 		}

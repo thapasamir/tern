@@ -10,19 +10,21 @@ import (
 func setEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	base := map[string]string{
-		"APP_ENV":               "",
-		"DATABASE_URL":          "postgres://x",
-		"REDIS_URL":             "redis://x",
-		"ADMIN_TOKEN":           "0123456789abcdef",
-		"SHUTDOWN_TIMEOUT":      "",
-		"ALLOW_LOCAL_ENDPOINTS": "",
-		"WORKER_CONCURRENCY":    "",
-		"DELIVERY_TIMEOUT":      "",
-		"RETRY_SCHEDULE":        "",
-		"AUTO_DISABLE_AFTER":    "",
-		"RECONCILE_INTERVAL":    "",
-		"HTTP_ADDR":             "",
-		"LOG_LEVEL":             "",
+		"APP_ENV":                      "",
+		"DATABASE_URL":                 "postgres://x",
+		"REDIS_URL":                    "redis://x",
+		"ADMIN_TOKEN":                  "0123456789abcdef",
+		"SHUTDOWN_TIMEOUT":             "",
+		"ALLOW_LOCAL_ENDPOINTS":        "",
+		"WORKER_CONCURRENCY":           "",
+		"DELIVERY_TIMEOUT":             "",
+		"RETRY_SCHEDULE":               "",
+		"AUTO_DISABLE_AFTER":           "",
+		"RECONCILE_INTERVAL":           "",
+		"RATE_LIMIT_EVENTS_PER_SECOND": "",
+		"RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "",
+		"HTTP_ADDR": "",
+		"LOG_LEVEL": "",
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -41,6 +43,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Env != "development" || cfg.HTTPAddr != ":8080" || cfg.ShutdownTimeout != 15*time.Second ||
 		cfg.WorkerConcurrency != 10 || cfg.DeliveryTimeout != 10*time.Second || cfg.AllowLocalEndpoints {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+	if cfg.EventsPerSecond != 100 || cfg.EndpointDeliveriesPerSecond != 25 {
+		t.Fatalf("unexpected rate limit defaults: %+v", cfg)
 	}
 	if cfg.AutoDisableAfter != 20 || cfg.ReconcileInterval != 5*time.Minute {
 		t.Fatalf("unexpected reliability defaults: %+v", cfg)
@@ -83,6 +88,10 @@ func TestLoad_Rejections(t *testing.T) {
 		"absurdly long delay":        {map[string]string{"RETRY_SCHEDULE": "5s,1000h"}, "RETRY_SCHEDULE"},
 		"too many retries":           {map[string]string{"RETRY_SCHEDULE": strings.Repeat("1s,", 20) + "1s"}, "at most"},
 		"zero auto-disable limit":    {map[string]string{"AUTO_DISABLE_AFTER": "0"}, "AUTO_DISABLE_AFTER"},
+		"negative event rate":        {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "-1"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
+		"absurd event rate":          {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "99999999"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
+		"non-numeric event rate":     {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "fast"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
+		"negative delivery rate":     {map[string]string{"RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "-1"}, "RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND"},
 		"non-numeric limit":          {map[string]string{"AUTO_DISABLE_AFTER": "lots"}, "AUTO_DISABLE_AFTER"},
 		"reconcile too frequent":     {map[string]string{"RECONCILE_INTERVAL": "10ms"}, "RECONCILE_INTERVAL"},
 		"bad duration":               {map[string]string{"SHUTDOWN_TIMEOUT": "soon"}, "SHUTDOWN_TIMEOUT"},
@@ -147,5 +156,13 @@ func TestLoad_DoesNotShareTheDefaultScheduleBetweenCalls(t *testing.T) {
 	second, _ := Load()
 	if second.RetrySchedule[0] != 5*time.Second {
 		t.Fatal("...must not change the defaults seen by later loads")
+	}
+}
+
+func TestLoad_RateLimitsCanBeSwitchedOff(t *testing.T) {
+	setEnv(t, map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "0", "RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "0"})
+	cfg, err := Load()
+	if err != nil || cfg.EventsPerSecond != 0 || cfg.EndpointDeliveriesPerSecond != 0 {
+		t.Fatalf("Load = %+v, %v; zero must be accepted and mean unlimited", cfg, err)
 	}
 }

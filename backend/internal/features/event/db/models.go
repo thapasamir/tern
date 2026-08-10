@@ -33,6 +33,7 @@ type Delivery struct {
 	UpdatedAt     time.Time
 	CompletedAt   *time.Time
 	NextAttemptAt *time.Time
+	ReplayedFrom  *uuid.UUID
 }
 
 type DeliveryAttempt struct {

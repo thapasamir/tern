@@ -12,6 +12,8 @@ type deliveryResponse struct {
 	EndpointID   string `json:"endpoint_id"`
 	Status       Status `json:"status"`
 	AttemptCount int    `json:"attempt_count"`
+	// ReplayedFrom is the delivery this one repeats, if it was created by a replay.
+	ReplayedFrom *string `json:"replayed_from"`
 	// NextAttemptAt is when the next retry is due, for a delivery that failed but will be retried.
 	NextAttemptAt *time.Time `json:"next_attempt_at"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -32,8 +34,25 @@ type deliveryDetailResponse struct {
 	Attempts []attemptResponse `json:"attempts"`
 }
 
+// replayRequest selects the failed deliveries to replay: those created in [Since, Until).
+type replayRequest struct {
+	Since time.Time  `json:"since"`
+	Until *time.Time `json:"until"` // optional: defaults to now
+}
+
+type replayResponse struct {
+	Replayed int  `json:"replayed"`
+	HasMore  bool `json:"has_more"`
+}
+
 func toResponse(d Delivery) deliveryResponse {
+	var replayedFrom *string
+	if d.ReplayedFrom != nil {
+		id := d.ReplayedFrom.String()
+		replayedFrom = &id
+	}
 	return deliveryResponse{
+		ReplayedFrom:  replayedFrom,
 		ID:            d.ID.String(),
 		EventID:       d.EventID.String(),
 		EndpointID:    d.EndpointID.String(),

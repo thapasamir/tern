@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/samirthapa/tern/internal/shared/httpx"
 	"github.com/samirthapa/tern/internal/shared/pagination"
@@ -50,5 +51,49 @@ func (c *Controller) get(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, toDetailResponse(d, attempts))
+	return nil
+}
+
+// replay repeats one finished delivery. The replay is delivered asynchronously, hence 202.
+func (c *Controller) replay(w http.ResponseWriter, r *http.Request) error {
+	tenantID, err := httpx.RequireTenantID(r)
+	if err != nil {
+		return err
+	}
+	id, err := httpx.PathUUID(r, "deliveryID", "delivery id")
+	if err != nil {
+		return err
+	}
+	d, err := c.svc.Replay(r.Context(), tenantID, id)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusAccepted, toResponse(d))
+	return nil
+}
+
+// replayFailed repeats the failed deliveries of an endpoint within a time range.
+func (c *Controller) replayFailed(w http.ResponseWriter, r *http.Request) error {
+	tenantID, err := httpx.RequireTenantID(r)
+	if err != nil {
+		return err
+	}
+	endpointID, err := httpx.PathUUID(r, "endpointID", "endpoint id")
+	if err != nil {
+		return err
+	}
+	var req replayRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		return err
+	}
+	var until time.Time
+	if req.Until != nil {
+		until = *req.Until
+	}
+	res, err := c.svc.ReplayFailed(r.Context(), tenantID, endpointID, req.Since, until)
+	if err != nil {
+		return err
+	}
+	httpx.JSON(w, http.StatusAccepted, replayResponse(res))
 	return nil
 }

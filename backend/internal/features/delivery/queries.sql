@@ -104,3 +104,41 @@ LIMIT sqlc.arg(row_limit);
 UPDATE deliveries
 SET enqueued_at = COALESCE(enqueued_at, sqlc.arg(at)::timestamptz), updated_at = sqlc.arg(at)::timestamptz
 WHERE id = ANY(sqlc.arg(ids)::uuid[]);
+
+-- ---- Replay -------------------------------------------------------------------------------
+-- A replay is a new delivery pointing back (replayed_from) at the one it repeats.
+
+-- A delivery with what replaying it needs to know about its endpoint.
+-- name: GetReplaySource :one
+SELECT d.id, d.tenant_id, d.event_id, d.endpoint_id, d.status,
+       (ep.status = 'active') AS endpoint_active
+FROM deliveries d
+JOIN endpoints ep ON ep.id = d.endpoint_id
+WHERE d.id = $1 AND d.tenant_id = $2;
+
+-- name: GetEndpointActive :one
+SELECT (status = 'active') AS active
+FROM endpoints
+WHERE id = $1 AND tenant_id = $2;
+
+-- Bulk insert through the Postgres COPY protocol.
+-- name: InsertReplays :copyfrom
+INSERT INTO deliveries (id, tenant_id, event_id, endpoint_id, status, replayed_from, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- The failed deliveries of an endpoint, in a time range, that have not been replayed yet, locked
+-- for this transaction. Locking with SKIP LOCKED makes two simultaneous bulk replays split the
+-- work instead of both replaying the same deliveries; NOT EXISTS makes a repeated call a no-op
+-- for deliveries that already have a replay.
+-- name: ClaimFailedForReplay :many
+SELECT d.id, d.event_id
+FROM deliveries d
+WHERE d.tenant_id = sqlc.arg(tenant_id)
+  AND d.endpoint_id = sqlc.arg(endpoint_id)
+  AND d.status = 'failed'
+  AND d.created_at >= sqlc.arg(since)::timestamptz
+  AND d.created_at <  sqlc.arg(until)::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM deliveries r WHERE r.replayed_from = d.id)
+ORDER BY d.id
+LIMIT sqlc.arg(row_limit)
+FOR UPDATE OF d SKIP LOCKED;
