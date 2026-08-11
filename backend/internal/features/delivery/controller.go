@@ -16,12 +16,26 @@ type Controller struct {
 
 func NewController(svc *Service) *Controller { return &Controller{svc: svc} }
 
-func (c *Controller) listByEvent(w http.ResponseWriter, r *http.Request) error {
-	tenantID, err := httpx.RequireTenantID(r)
+// list is the delivery log: GET /deliveries?endpoint_id=&event_id=&status=&since=&until=
+func (c *Controller) list(w http.ResponseWriter, r *http.Request) error {
+	filter, err := filterFromQuery(r)
 	if err != nil {
 		return err
 	}
+	return c.respondWithList(w, r, filter)
+}
+
+// listByEvent is the delivery log narrowed to one event: GET /events/{eventID}/deliveries
+func (c *Controller) listByEvent(w http.ResponseWriter, r *http.Request) error {
 	eventID, err := httpx.PathUUID(r, "eventID", "event id")
+	if err != nil {
+		return err
+	}
+	return c.respondWithList(w, r, ListFilter{EventID: &eventID})
+}
+
+func (c *Controller) respondWithList(w http.ResponseWriter, r *http.Request, filter ListFilter) error {
+	tenantID, err := httpx.RequireTenantID(r)
 	if err != nil {
 		return err
 	}
@@ -29,12 +43,37 @@ func (c *Controller) listByEvent(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	res, err := c.svc.ListByEvent(r.Context(), tenantID, eventID, params)
+	res, err := c.svc.List(r.Context(), tenantID, filter, params)
 	if err != nil {
 		return err
 	}
 	httpx.JSON(w, http.StatusOK, pagination.ToPage(res, toResponse))
 	return nil
+}
+
+// filterFromQuery reads the optional log filters from the query string.
+func filterFromQuery(r *http.Request) (ListFilter, error) {
+	var (
+		f   ListFilter
+		err error
+	)
+	if f.EndpointID, err = httpx.QueryUUID(r, "endpoint_id"); err != nil {
+		return ListFilter{}, err
+	}
+	if f.EventID, err = httpx.QueryUUID(r, "event_id"); err != nil {
+		return ListFilter{}, err
+	}
+	if f.Since, err = httpx.QueryTime(r, "since"); err != nil {
+		return ListFilter{}, err
+	}
+	if f.Until, err = httpx.QueryTime(r, "until"); err != nil {
+		return ListFilter{}, err
+	}
+	if raw := r.URL.Query().Get("status"); raw != "" {
+		status := Status(raw) // validated by the service
+		f.Status = &status
+	}
+	return f, nil
 }
 
 func (c *Controller) get(w http.ResponseWriter, r *http.Request) error {

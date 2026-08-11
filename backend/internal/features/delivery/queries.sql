@@ -83,12 +83,18 @@ SELECT * FROM delivery_attempts
 WHERE delivery_id = $1
 ORDER BY attempt_number;
 
--- Keyset pagination: newest first, continuing after the last ID of the previous page.
--- name: ListDeliveriesByEvent :many
+-- The delivery log. Every filter is optional (a NULL argument means "no filter"); created_at is the
+-- delivery's creation time, in [since, until). Keyset pagination: newest first, continuing after
+-- the last ID of the previous page.
+-- name: ListDeliveries :many
 SELECT * FROM deliveries
 WHERE tenant_id = sqlc.arg(tenant_id)
-  AND event_id = sqlc.arg(event_id)
   AND id < sqlc.arg(after)
+  AND (sqlc.narg(endpoint_id)::uuid IS NULL OR endpoint_id = sqlc.narg(endpoint_id))
+  AND (sqlc.narg(event_id)::uuid IS NULL OR event_id = sqlc.narg(event_id))
+  AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
+  AND (sqlc.narg(since)::timestamptz IS NULL OR created_at >= sqlc.narg(since))
+  AND (sqlc.narg(until)::timestamptz IS NULL OR created_at < sqlc.narg(until))
 ORDER BY id DESC
 LIMIT sqlc.arg(row_limit);
 

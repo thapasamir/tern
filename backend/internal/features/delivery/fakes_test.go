@@ -27,6 +27,10 @@ type fakeRepo struct {
 	markErr      error
 	listUnenqErr error
 	overdueErr   error
+	listErr      error
+
+	listFilter ListFilter // what List was last asked for
+	listCalled bool
 
 	// replay
 	replaySources   map[uuid.UUID]ReplaySource // by delivery id
@@ -105,14 +109,19 @@ func (f *fakeRepo) ListAttempts(_ context.Context, deliveryID uuid.UUID) ([]Atte
 	return f.attempts[deliveryID], nil
 }
 
-func (f *fakeRepo) ListByEvent(_ context.Context, tenantID, eventID uuid.UUID, _ pagination.Params) ([]Delivery, error) {
+// List records the filter it was given and returns the tenant's deliveries of the filtered event.
+// The real filtering is SQL, covered by the end-to-end tests; here only the service's behaviour
+// around it is under test.
+func (f *fakeRepo) List(_ context.Context, tenantID uuid.UUID, filter ListFilter, _ pagination.Params) ([]Delivery, error) {
+	f.listFilter = filter
+	f.listCalled = true
 	var out []Delivery
 	for _, d := range f.deliveries {
-		if d.TenantID == tenantID && d.EventID == eventID {
+		if d.TenantID == tenantID && (filter.EventID == nil || d.EventID == *filter.EventID) {
 			out = append(out, d)
 		}
 	}
-	return out, nil
+	return out, f.listErr
 }
 
 func (f *fakeRepo) ListUnenqueued(_ context.Context, olderThan time.Time, _ int) ([]uuid.UUID, error) {

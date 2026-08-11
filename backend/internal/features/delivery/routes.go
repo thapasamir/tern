@@ -26,6 +26,7 @@ func (m *Module) Service() *Service { return m.svc }
 // RegisterRoutes expects r to already be guarded by the tenant Authenticate middleware.
 // Registered flat because the event feature owns the other /events routes (see its routes.go).
 func (m *Module) RegisterRoutes(r chi.Router) {
+	r.Get("/deliveries", httpx.Handle(m.ctrl.list))
 	r.Get("/events/{eventID}/deliveries", httpx.Handle(m.ctrl.listByEvent))
 	r.Get("/deliveries/{deliveryID}", httpx.Handle(m.ctrl.get))
 	r.Post("/deliveries/{deliveryID}/replay", httpx.Handle(m.ctrl.replay))

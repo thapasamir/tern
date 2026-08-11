@@ -350,28 +350,42 @@ func (q *Queries) ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Del
 	return items, nil
 }
 
-const listDeliveriesByEvent = `-- name: ListDeliveriesByEvent :many
+const listDeliveries = `-- name: ListDeliveries :many
 SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at, replayed_from FROM deliveries
 WHERE tenant_id = $1
-  AND event_id = $2
-  AND id < $3
+  AND id < $2
+  AND ($3::uuid IS NULL OR endpoint_id = $3)
+  AND ($4::uuid IS NULL OR event_id = $4)
+  AND ($5::text IS NULL OR status = $5)
+  AND ($6::timestamptz IS NULL OR created_at >= $6)
+  AND ($7::timestamptz IS NULL OR created_at < $7)
 ORDER BY id DESC
-LIMIT $4
+LIMIT $8
 `
 
-type ListDeliveriesByEventParams struct {
-	TenantID uuid.UUID
-	EventID  uuid.UUID
-	After    uuid.UUID
-	RowLimit int32
+type ListDeliveriesParams struct {
+	TenantID   uuid.UUID
+	After      uuid.UUID
+	EndpointID *uuid.UUID
+	EventID    *uuid.UUID
+	Status     *string
+	Since      *time.Time
+	Until      *time.Time
+	RowLimit   int32
 }
 
-// Keyset pagination: newest first, continuing after the last ID of the previous page.
-func (q *Queries) ListDeliveriesByEvent(ctx context.Context, arg ListDeliveriesByEventParams) ([]Delivery, error) {
-	rows, err := q.db.Query(ctx, listDeliveriesByEvent,
+// The delivery log. Every filter is optional (a NULL argument means "no filter"); created_at is the
+// delivery's creation time, in [since, until). Keyset pagination: newest first, continuing after
+// the last ID of the previous page.
+func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) ([]Delivery, error) {
+	rows, err := q.db.Query(ctx, listDeliveries,
 		arg.TenantID,
-		arg.EventID,
 		arg.After,
+		arg.EndpointID,
+		arg.EventID,
+		arg.Status,
+		arg.Since,
+		arg.Until,
 		arg.RowLimit,
 	)
 	if err != nil {

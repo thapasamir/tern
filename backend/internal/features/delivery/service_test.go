@@ -127,7 +127,7 @@ func TestGetWithAttempts(t *testing.T) {
 	testutil.WantCode(t, err, apperror.CodeNotFound)
 }
 
-func TestListByEvent_IsTenantScopedAndPaginated(t *testing.T) {
+func TestList_IsTenantScopedAndPaginated(t *testing.T) {
 	svc, repo, _ := newService()
 	tenantID, eventID := uuid.New(), ids.New()
 	for i := 0; i < 3; i++ {
@@ -137,7 +137,7 @@ func TestListByEvent_IsTenantScopedAndPaginated(t *testing.T) {
 	other := Delivery{ID: ids.New(), TenantID: uuid.New(), EventID: eventID}
 	repo.deliveries[other.ID] = other
 
-	res, err := svc.ListByEvent(context.Background(), tenantID, eventID, pagination.Params{Limit: 2, After: uuid.Max})
+	res, err := svc.List(context.Background(), tenantID, ListFilter{EventID: &eventID}, pagination.Params{Limit: 2, After: uuid.Max})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,4 +421,63 @@ func TestReplayFailed_StorageFailureIsAnInternalError(t *testing.T) {
 	f.repo.replayFailedErr = errors.New("db down")
 	_, err := f.svc.ReplayFailed(context.Background(), f.tenantID, f.endpointID, f.since, time.Time{})
 	testutil.WantCode(t, err, apperror.CodeInternal)
+}
+
+func TestList_PassesTheFilterToTheRepository(t *testing.T) {
+	svc, repo, _ := newService()
+	endpoint, event := ids.New(), ids.New()
+	status := StatusFailed
+	since, until := testNow.Add(-time.Hour), testNow
+	want := ListFilter{EndpointID: &endpoint, EventID: &event, Status: &status, Since: &since, Until: &until}
+
+	if _, err := svc.List(context.Background(), uuid.New(), want, pagination.Params{Limit: 10, After: uuid.Max}); err != nil {
+		t.Fatal(err)
+	}
+	got := repo.listFilter
+	if *got.EndpointID != endpoint || *got.EventID != event || *got.Status != StatusFailed ||
+		!got.Since.Equal(since) || !got.Until.Equal(until) {
+		t.Fatalf("repository got %+v, want every filter passed through", got)
+	}
+}
+
+func TestList_RejectsBadFilters(t *testing.T) {
+	svc, repo, _ := newService()
+	ctx, params := context.Background(), pagination.Params{Limit: 10, After: uuid.Max}
+
+	bogus := Status("exploded")
+	_, err := svc.List(ctx, uuid.New(), ListFilter{Status: &bogus}, params)
+	testutil.WantCode(t, err, apperror.CodeInvalid)
+
+	later, earlier := testNow, testNow.Add(-time.Hour)
+	_, err = svc.List(ctx, uuid.New(), ListFilter{Since: &later, Until: &earlier}, params)
+	testutil.WantCode(t, err, apperror.CodeInvalid)
+	_, err = svc.List(ctx, uuid.New(), ListFilter{Since: &later, Until: &later}, params)
+	testutil.WantCode(t, err, apperror.CodeInvalid) // an empty range
+
+	if repo.listCalled {
+		t.Fatal("an invalid filter must not reach the repository")
+	}
+}
+
+func TestList_AnEmptyFilterIsFine(t *testing.T) {
+	svc, repo, _ := newService()
+	if _, err := svc.List(context.Background(), uuid.New(), ListFilter{}, pagination.Params{Limit: 10, After: uuid.Max}); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.listCalled {
+		t.Fatal("the repository should have been asked")
+	}
+}
+
+func TestParseStatus(t *testing.T) {
+	for _, ok := range []string{"pending", "succeeded", "failed"} {
+		if st, valid := ParseStatus(ok); !valid || string(st) != ok {
+			t.Errorf("ParseStatus(%q) = %q, %v; want it accepted", ok, st, valid)
+		}
+	}
+	for _, bad := range []string{"", "Pending", "FAILED", "done", " failed"} {
+		if _, valid := ParseStatus(bad); valid {
+			t.Errorf("ParseStatus(%q) accepted; want it rejected", bad)
+		}
+	}
 }

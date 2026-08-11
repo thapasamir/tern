@@ -36,7 +36,8 @@ type Repository interface {
 	// The remaining methods back the API and are tenant-scoped.
 	Get(ctx context.Context, tenantID, id uuid.UUID) (Delivery, error)
 	ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Attempt, error)
-	ListByEvent(ctx context.Context, tenantID, eventID uuid.UUID, p pagination.Params) ([]Delivery, error)
+	// List returns the tenant's deliveries that match the filter, newest first.
+	List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) ([]Delivery, error)
 
 	// ListUnenqueued and MarkEnqueued implement the outbox sweeper.
 	ListUnenqueued(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error)
@@ -267,15 +268,24 @@ func (r *pgRepository) ListAttempts(ctx context.Context, deliveryID uuid.UUID) (
 	return out, nil
 }
 
-func (r *pgRepository) ListByEvent(ctx context.Context, tenantID, eventID uuid.UUID, p pagination.Params) ([]Delivery, error) {
-	rows, err := r.q.ListDeliveriesByEvent(ctx, deliverydb.ListDeliveriesByEventParams{
-		TenantID: tenantID,
-		EventID:  eventID,
-		After:    p.After,
-		RowLimit: p.QueryLimit(),
+func (r *pgRepository) List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) ([]Delivery, error) {
+	var status *string
+	if f.Status != nil {
+		s := string(*f.Status)
+		status = &s
+	}
+	rows, err := r.q.ListDeliveries(ctx, deliverydb.ListDeliveriesParams{
+		TenantID:   tenantID,
+		After:      p.After,
+		EndpointID: f.EndpointID,
+		EventID:    f.EventID,
+		Status:     status,
+		Since:      f.Since,
+		Until:      f.Until,
+		RowLimit:   p.QueryLimit(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list deliveries by event: %w", err)
+		return nil, fmt.Errorf("list deliveries: %w", err)
 	}
 	out := make([]Delivery, 0, len(rows))
 	for _, row := range rows {

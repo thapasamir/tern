@@ -103,3 +103,22 @@ type ReplayBatch struct {
 	// HasMore is true when more failed deliveries matched than one call replays.
 	HasMore bool
 }
+
+// ParseStatus converts text from a request into a Status, reporting whether it is a real one.
+func ParseStatus(s string) (Status, bool) {
+	switch st := Status(s); st {
+	case StatusPending, StatusSucceeded, StatusFailed:
+		return st, true
+	}
+	return "", false
+}
+
+// ListFilter narrows the delivery log. A nil field means "do not filter on this".
+type ListFilter struct {
+	EndpointID *uuid.UUID
+	EventID    *uuid.UUID
+	Status     *Status
+	// Since and Until bound the delivery's creation time: Since <= created_at < Until.
+	Since *time.Time
+	Until *time.Time
+}

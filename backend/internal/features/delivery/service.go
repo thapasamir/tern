@@ -197,9 +197,18 @@ func (s *Service) GetWithAttempts(ctx context.Context, tenantID, id uuid.UUID) (
 	return d, attempts, nil
 }
 
-// ListByEvent returns the deliveries of one event, newest first.
-func (s *Service) ListByEvent(ctx context.Context, tenantID, eventID uuid.UUID, p pagination.Params) (pagination.Result[Delivery], error) {
-	rows, err := s.repo.ListByEvent(ctx, tenantID, eventID, p)
+// List returns the delivery log: the tenant's deliveries matching the filter, newest first.
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) (pagination.Result[Delivery], error) {
+	if f.Status != nil {
+		if _, ok := ParseStatus(string(*f.Status)); !ok {
+			return pagination.Result[Delivery]{}, apperror.Invalid("status must be one of: pending, succeeded, failed")
+		}
+	}
+	if f.Since != nil && f.Until != nil && !f.Since.Before(*f.Until) {
+		return pagination.Result[Delivery]{}, apperror.Invalid("since must be before until")
+	}
+
+	rows, err := s.repo.List(ctx, tenantID, f, p)
 	if err != nil {
 		return pagination.Result[Delivery]{}, apperror.Internal(err)
 	}
