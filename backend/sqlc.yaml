@@ -80,3 +80,25 @@ sql:
           url: URL
           endpoint_url: EndpointURL
         overrides: *overrides
+
+  - engine: postgresql
+    schema: migrations
+    queries: internal/features/stats/queries.sql
+    gen:
+      go:
+        package: statsdb
+        out: internal/features/stats/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        overrides: *overrides
+
+  - engine: postgresql
+    schema: migrations
+    queries: internal/features/retention/queries.sql
+    gen:
+      go:
+        package: retentiondb
+        out: internal/features/retention/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        overrides: *overrides
