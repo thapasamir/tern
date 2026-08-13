@@ -50,7 +50,7 @@ var testLimit = ratelimit.Limit{Rate: 10, Burst: 20}
 func TestRateLimit_AllowedRequestsPassWithHeaders(t *testing.T) {
 	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: true, Remaining: 17, ResetAfter: 1500 * time.Millisecond}}
 	tenant := uuid.New()
-	rec, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger()), &tenant)
+	rec, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger(), nil), &tenant)
 
 	if !reached || rec.Code != http.StatusAccepted {
 		t.Fatalf("status %d, reached %v; an allowed request must reach the handler", rec.Code, reached)
@@ -67,7 +67,7 @@ func TestRateLimit_AllowedRequestsPassWithHeaders(t *testing.T) {
 func TestRateLimit_RefusesWith429AndRetryAfter(t *testing.T) {
 	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: false, RetryAfter: 2300 * time.Millisecond, ResetAfter: 5 * time.Second}}
 	tenant := uuid.New()
-	rec, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger()), &tenant)
+	rec, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger(), nil), &tenant)
 
 	if reached {
 		t.Fatal("a refused request must not reach the handler")
@@ -89,7 +89,7 @@ func TestRateLimit_RefusesWith429AndRetryAfter(t *testing.T) {
 func TestRateLimit_RetryAfterIsAtLeastOneSecond(t *testing.T) {
 	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: false, RetryAfter: 20 * time.Millisecond}}
 	tenant := uuid.New()
-	rec, _ := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger()), &tenant)
+	rec, _ := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger(), nil), &tenant)
 	if got := rec.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1: a client told to wait 0 seconds would retry in a tight loop", got)
 	}
@@ -98,8 +98,8 @@ func TestRateLimit_RetryAfterIsAtLeastOneSecond(t *testing.T) {
 func TestRateLimit_BucketsAreKeyedByScopeAndTenant(t *testing.T) {
 	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: true}}
 	a, b := uuid.New(), uuid.New()
-	events := RateLimit(l, "events", testLimit, testutil.QuietLogger())
-	other := RateLimit(l, "other", testLimit, testutil.QuietLogger())
+	events := RateLimit(l, "events", testLimit, testutil.QuietLogger(), nil)
+	other := RateLimit(l, "other", testLimit, testutil.QuietLogger(), nil)
 
 	serve(t, events, &a)
 	serve(t, events, &b)
@@ -118,7 +118,7 @@ func TestRateLimit_BucketsAreKeyedByScopeAndTenant(t *testing.T) {
 func TestRateLimit_FailsOpenWhenTheLimiterBreaks(t *testing.T) {
 	l := &fakeLimiter{err: errors.New("redis: connection refused")}
 	tenant := uuid.New()
-	rec, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger()), &tenant)
+	rec, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger(), nil), &tenant)
 	if !reached || rec.Code != http.StatusAccepted {
 		t.Fatalf("status %d, reached %v; a broken limiter must not refuse customers' events", rec.Code, reached)
 	}
@@ -126,7 +126,7 @@ func TestRateLimit_FailsOpenWhenTheLimiterBreaks(t *testing.T) {
 
 func TestRateLimit_LeavesUnauthenticatedRequestsAlone(t *testing.T) {
 	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: false}}
-	_, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger()), nil)
+	_, reached := serve(t, RateLimit(l, "events", testLimit, testutil.QuietLogger(), nil), nil)
 	if !reached || len(l.keys) != 0 {
 		t.Fatalf("reached %v, limiter calls %d; with no tenant there is nobody to limit", reached, len(l.keys))
 	}
@@ -135,8 +135,29 @@ func TestRateLimit_LeavesUnauthenticatedRequestsAlone(t *testing.T) {
 func TestRateLimit_UnlimitedIsANoOp(t *testing.T) {
 	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: false}}
 	tenant := uuid.New()
-	rec, reached := serve(t, RateLimit(l, "events", ratelimit.PerSecond(0), testutil.QuietLogger()), &tenant)
+	rec, reached := serve(t, RateLimit(l, "events", ratelimit.PerSecond(0), testutil.QuietLogger(), nil), &tenant)
 	if !reached || len(l.keys) != 0 || rec.Header().Get("RateLimit-Limit") != "" {
 		t.Fatal("an unlimited limit must not consult the limiter or add headers")
+	}
+}
+
+type fakeRefusalObserver struct{ scopes []string }
+
+func (f *fakeRefusalObserver) RateLimited(scope string) { f.scopes = append(f.scopes, scope) }
+
+func TestRateLimit_ReportsRefusalsButNotAllowedRequests(t *testing.T) {
+	tenant := uuid.New()
+	obs := &fakeRefusalObserver{}
+
+	allowed := &fakeLimiter{decision: ratelimit.Decision{Allowed: true}}
+	serve(t, RateLimit(allowed, "events", testLimit, testutil.QuietLogger(), obs), &tenant)
+	if len(obs.scopes) != 0 {
+		t.Fatalf("observed %v for an allowed request, want nothing", obs.scopes)
+	}
+
+	refused := &fakeLimiter{decision: ratelimit.Decision{Allowed: false, RetryAfter: time.Second}}
+	serve(t, RateLimit(refused, "events", testLimit, testutil.QuietLogger(), obs), &tenant)
+	if len(obs.scopes) != 1 || obs.scopes[0] != "events" {
+		t.Fatalf("observed %v, want one refusal in the scope \"events\"", obs.scopes)
 	}
 }

@@ -45,6 +45,14 @@ type Config struct {
 	// EndpointDeliveriesPerSecond limits how many deliveries per second are sent to any single
 	// endpoint, which protects the customer's server from being flooded. Zero means unlimited.
 	EndpointDeliveriesPerSecond int
+
+	// RetentionDays is how long events, with their deliveries and attempts, are kept before the
+	// worker deletes them. Zero keeps everything.
+	RetentionDays int
+
+	// WorkerMetricsAddr is where the worker serves /metrics. The port is not authenticated, so it
+	// belongs on an internal network. Empty disables it.
+	WorkerMetricsAddr string
 }
 
 const (
@@ -65,6 +73,11 @@ const (
 	maxRatePerSecond                   = 100_000
 	defaultEventsPerSecond             = 100
 	defaultEndpointDeliveriesPerSecond = 25
+
+	defaultRetentionDays = 30
+	maxRetentionDays     = 3650
+
+	defaultWorkerMetricsAddr = ":9102"
 )
 
 // defaultRetrySchedule gives a delivery 8 attempts over roughly 28 hours, which rides out most
@@ -114,6 +127,10 @@ func Load() (Config, error) {
 	if cfg.EndpointDeliveriesPerSecond, err = envInt("RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND", defaultEndpointDeliveriesPerSecond); err != nil {
 		return Config{}, err
 	}
+	if cfg.RetentionDays, err = envInt("RETENTION_DAYS", defaultRetentionDays); err != nil {
+		return Config{}, err
+	}
+	cfg.WorkerMetricsAddr = envPresent("WORKER_METRICS_ADDR", defaultWorkerMetricsAddr)
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -153,6 +170,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: RECONCILE_INTERVAL must be between %s and %s", minReconcileInterval, maxReconcileInterval)
 	case c.EventsPerSecond < 0 || c.EventsPerSecond > maxRatePerSecond:
 		return fmt.Errorf("config: RATE_LIMIT_EVENTS_PER_SECOND must be between 0 (unlimited) and %d", maxRatePerSecond)
+	case c.RetentionDays < 0 || c.RetentionDays > maxRetentionDays:
+		return fmt.Errorf("config: RETENTION_DAYS must be between 0 (keep everything) and %d", maxRetentionDays)
 	case c.EndpointDeliveriesPerSecond < 0 || c.EndpointDeliveriesPerSecond > maxRatePerSecond:
 		return fmt.Errorf("config: RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND must be between 0 (unlimited) and %d", maxRatePerSecond)
 	}
@@ -166,6 +185,15 @@ func (c Config) validate() error {
 
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// envPresent is like env, except that a variable that is set to the empty string stays empty.
+// It is for settings where "empty" is a real choice, such as switching a listener off.
+func envPresent(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return fallback

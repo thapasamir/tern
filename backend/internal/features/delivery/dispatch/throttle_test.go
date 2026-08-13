@@ -169,3 +169,21 @@ func TestProcess_WithoutAThrottleNothingIsLimited(t *testing.T) {
 		t.Fatal("with no throttle configured, deliveries must go straight out")
 	}
 }
+
+// fakeObserver records what the processor reported.
+type fakeObserver struct {
+	attempts  []observedAttempt
+	throttled int
+	disabled  []string
+}
+
+type observedAttempt struct {
+	outcome string
+	took    time.Duration
+}
+
+func (f *fakeObserver) AttemptFinished(outcome string, took time.Duration) {
+	f.attempts = append(f.attempts, observedAttempt{outcome, took})
+}
+func (f *fakeObserver) Throttled()                { f.throttled++ }
+func (f *fakeObserver) EndpointDisabled(r string) { f.disabled = append(f.disabled, r) }

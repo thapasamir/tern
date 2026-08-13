@@ -34,6 +34,11 @@ func (p *Processor) reportHealth(ctx context.Context, w delivery.Work, v verdict
 		return
 	}
 	if disabled {
+		reason := DisabledAuto
+		if v.health == healthGone {
+			reason = DisabledGone
+		}
+		p.cfg.Observer.EndpointDisabled(reason)
 		p.failPendingDeliveries(ctx, w.EndpointID)
 	}
 }

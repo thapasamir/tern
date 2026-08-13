@@ -16,6 +16,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -117,6 +118,45 @@ func (q *Redis) Retry(ctx context.Context, id string, runAt time.Time) error {
 	}
 	return nil
 }
+
+// Depth is a snapshot of how much work the queue holds.
+type Depth struct {
+	// Due is the number of waiting jobs that are ready to run now.
+	Due int64
+	// Scheduled is the number of waiting jobs set to run later (retries, throttled deliveries).
+	Scheduled int64
+	// Processing is the number of jobs a worker has claimed and not finished.
+	Processing int64
+	// OldestDueAge is how long the longest-waiting due job has been due. It is the queue's lag:
+	// near zero when workers keep up, growing when they do not.
+	OldestDueAge time.Duration
+}
+
+// Depth reports how much work the queue holds.
+func (q *Redis) Depth(ctx context.Context) (Depth, error) {
+	now := q.now()
+	nowMs := millis(now)
+	limit := strconvMs(nowMs)
+
+	pipe := q.rdb.Pipeline()
+	due := pipe.ZCount(ctx, q.readyKey, "-inf", limit)
+	waiting := pipe.ZCard(ctx, q.readyKey)
+	processing := pipe.ZCard(ctx, q.workingKey)
+	oldest := pipe.ZRangeByScoreWithScores(ctx, q.readyKey, &redis.ZRangeBy{Min: "-inf", Max: limit, Count: 1})
+	if _, err := pipe.Exec(ctx); err != nil {
+		return Depth{}, fmt.Errorf("queue: depth: %w", err)
+	}
+
+	d := Depth{Due: due.Val(), Scheduled: waiting.Val() - due.Val(), Processing: processing.Val()}
+	if jobs := oldest.Val(); len(jobs) > 0 {
+		if lag := time.Duration(nowMs-int64(jobs[0].Score)) * time.Millisecond; lag > 0 {
+			d.OldestDueAge = lag
+		}
+	}
+	return d, nil
+}
+
+func strconvMs(ms int64) string { return strconv.FormatInt(ms, 10) }
 
 // RecoverExpired makes jobs whose lease ran out runnable again and returns how many there were.
 func (q *Redis) RecoverExpired(ctx context.Context) (int, error) {

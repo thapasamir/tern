@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ func setEnv(t *testing.T, overrides map[string]string) {
 		"RETRY_SCHEDULE":               "",
 		"AUTO_DISABLE_AFTER":           "",
 		"RECONCILE_INTERVAL":           "",
+		"RETENTION_DAYS":               "",
 		"RATE_LIMIT_EVENTS_PER_SECOND": "",
 		"RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "",
 		"HTTP_ADDR": "",
@@ -43,6 +45,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Env != "development" || cfg.HTTPAddr != ":8080" || cfg.ShutdownTimeout != 15*time.Second ||
 		cfg.WorkerConcurrency != 10 || cfg.DeliveryTimeout != 10*time.Second || cfg.AllowLocalEndpoints {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+	if cfg.RetentionDays != 30 {
+		t.Fatalf("retention default = %d days, want 30", cfg.RetentionDays)
 	}
 	if cfg.EventsPerSecond != 100 || cfg.EndpointDeliveriesPerSecond != 25 {
 		t.Fatalf("unexpected rate limit defaults: %+v", cfg)
@@ -88,6 +93,9 @@ func TestLoad_Rejections(t *testing.T) {
 		"absurdly long delay":        {map[string]string{"RETRY_SCHEDULE": "5s,1000h"}, "RETRY_SCHEDULE"},
 		"too many retries":           {map[string]string{"RETRY_SCHEDULE": strings.Repeat("1s,", 20) + "1s"}, "at most"},
 		"zero auto-disable limit":    {map[string]string{"AUTO_DISABLE_AFTER": "0"}, "AUTO_DISABLE_AFTER"},
+		"negative retention":         {map[string]string{"RETENTION_DAYS": "-1"}, "RETENTION_DAYS"},
+		"absurd retention":           {map[string]string{"RETENTION_DAYS": "100000"}, "RETENTION_DAYS"},
+		"non-numeric retention":      {map[string]string{"RETENTION_DAYS": "forever"}, "RETENTION_DAYS"},
 		"negative event rate":        {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "-1"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
 		"absurd event rate":          {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "99999999"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
 		"non-numeric event rate":     {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "fast"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
@@ -165,4 +173,48 @@ func TestLoad_RateLimitsCanBeSwitchedOff(t *testing.T) {
 	if err != nil || cfg.EventsPerSecond != 0 || cfg.EndpointDeliveriesPerSecond != 0 {
 		t.Fatalf("Load = %+v, %v; zero must be accepted and mean unlimited", cfg, err)
 	}
+}
+
+func TestLoad_RetentionCanBeSwitchedOff(t *testing.T) {
+	setEnv(t, map[string]string{"RETENTION_DAYS": "0"})
+	cfg, err := Load()
+	if err != nil || cfg.RetentionDays != 0 {
+		t.Fatalf("Load = %+v, %v; zero must be accepted and mean keep everything", cfg, err)
+	}
+}
+
+// unsetEnv removes a variable for the duration of the test, which t.Setenv cannot do.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	if old, ok := os.LookupEnv(key); ok {
+		t.Cleanup(func() { _ = os.Setenv(key, old) })
+	}
+	_ = os.Unsetenv(key)
+}
+
+func TestLoad_WorkerMetricsAddress(t *testing.T) {
+	t.Run("defaults to a port", func(t *testing.T) {
+		setEnv(t, nil)
+		unsetEnv(t, "WORKER_METRICS_ADDR")
+		cfg, err := Load()
+		if err != nil || cfg.WorkerMetricsAddr != ":9102" {
+			t.Fatalf("Load = %q, %v; want the default :9102", cfg.WorkerMetricsAddr, err)
+		}
+	})
+	t.Run("can be moved", func(t *testing.T) {
+		setEnv(t, nil)
+		t.Setenv("WORKER_METRICS_ADDR", "127.0.0.1:9999")
+		cfg, _ := Load()
+		if cfg.WorkerMetricsAddr != "127.0.0.1:9999" {
+			t.Fatalf("addr = %q, want the configured one", cfg.WorkerMetricsAddr)
+		}
+	})
+	t.Run("can be switched off with an empty value", func(t *testing.T) {
+		setEnv(t, nil)
+		t.Setenv("WORKER_METRICS_ADDR", "")
+		cfg, _ := Load()
+		if cfg.WorkerMetricsAddr != "" {
+			t.Fatalf("addr = %q, want empty: an empty value is how the listener is disabled", cfg.WorkerMetricsAddr)
+		}
+	})
 }

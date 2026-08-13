@@ -35,6 +35,8 @@ type ProcessorConfig struct {
 	AutoDisableAfter int
 	// Throttle, if set, limits how fast deliveries are sent to each endpoint.
 	Throttle Throttle
+	// Observer, if set, is told what the processor does, for metrics.
+	Observer Observer
 }
 
 // Processor makes the delivery attempts. The worker calls Process for every job it claims.
@@ -57,6 +59,9 @@ type Processor struct {
 }
 
 func NewProcessor(repo delivery.Repository, send Sender, health EndpointHealth, cfg ProcessorConfig) *Processor {
+	if cfg.Observer == nil {
+		cfg.Observer = noopObserver{}
+	}
 	return &Processor{repo: repo, sender: send, health: health, cfg: cfg, now: time.Now, log: slog.Default()}
 }
 
@@ -88,6 +93,7 @@ func (p *Processor) Process(ctx context.Context, jobID string) (time.Time, error
 		// The endpoint is busy. Hold the delivery back without counting an attempt: being throttled
 		// says nothing about the endpoint's health and must not eat into the retries.
 		p.log.Debug("delivery held back to protect the endpoint", "delivery_id", work.DeliveryID, "wait", wait)
+		p.cfg.Observer.Throttled()
 		return started.Add(wait), nil
 	}
 
@@ -105,6 +111,7 @@ func (p *Processor) Process(ctx context.Context, jobID string) (time.Time, error
 		return noRetry, nil // another worker got there first; it owns the follow-up
 	}
 
+	p.cfg.Observer.AttemptFinished(outcomeOf(v, result), result.Duration)
 	p.reportHealth(ctx, work, v)
 	return v.retryAt, nil
 }

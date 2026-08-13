@@ -41,7 +41,29 @@ type Options struct {
 	// Lease is how long a claimed job stays invisible to other workers. It must exceed JobTimeout,
 	// otherwise a job still running could be handed to a second worker.
 	Lease time.Duration
+	// Observer, if set, is told when jobs start and finish, for metrics.
+	Observer Observer
 }
+
+// The results of a job, as reported to an Observer.
+const (
+	ResultCompleted      = "completed"       // the job finished and was acknowledged
+	ResultRetryScheduled = "retry_scheduled" // the job asked to run again later
+	ResultFailed         = "failed"          // the job returned an error and will be redelivered
+	ResultPanic          = "panic"           // the job panicked and will be redelivered
+)
+
+// Observer is told what the Runner does, so that it can be measured. It is implemented by the
+// metrics package.
+type Observer interface {
+	JobStarted()
+	JobFinished(result string)
+}
+
+type noopObserver struct{}
+
+func (noopObserver) JobStarted()        {}
+func (noopObserver) JobFinished(string) {}
 
 func (o Options) validate() error {
 	switch {
@@ -63,6 +85,7 @@ type Runner struct {
 	proc  Processor
 	opts  Options
 	log   *slog.Logger
+	obs   Observer
 }
 
 // NewRunner returns a Runner, or an error if opts is inconsistent.
@@ -70,7 +93,11 @@ func NewRunner(q Queue, p Processor, opts Options, log *slog.Logger) (*Runner, e
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
-	return &Runner{queue: q, proc: p, opts: opts, log: log}, nil
+	var obs Observer = noopObserver{}
+	if opts.Observer != nil {
+		obs = opts.Observer
+	}
+	return &Runner{queue: q, proc: p, opts: opts, log: log, obs: obs}, nil
 }
 
 // Run processes jobs until ctx is cancelled, then waits for the jobs already running to finish
@@ -119,12 +146,17 @@ func (r *Runner) Run(ctx context.Context) {
 // run executes one job. It never lets a panic escape, since that would take down the process and
 // every other job with it, and it never acknowledges a job that did not complete.
 func (r *Runner) run(ctx context.Context, jobID string) {
+	r.obs.JobStarted()
+	result := ResultCompleted
+	defer func() { r.obs.JobFinished(result) }() // declared first, so it runs last, after the recover below
+
 	// Detached from ctx so that shutting down does not abort work that is already under way.
 	jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.opts.JobTimeout)
 	defer cancel()
 
 	defer func() {
 		if p := recover(); p != nil {
+			result = ResultPanic
 			r.log.Error("job panicked; it will be redelivered when its lease expires",
 				"job", jobID, "panic", p, "stack", string(debug.Stack()))
 		}
@@ -132,10 +164,12 @@ func (r *Runner) run(ctx context.Context, jobID string) {
 
 	retryAt, err := r.proc.Process(jobCtx, jobID)
 	if err != nil {
+		result = ResultFailed
 		r.log.Error("job failed; it will be redelivered when its lease expires", "job", jobID, "error", err)
 		return
 	}
 	if !retryAt.IsZero() {
+		result = ResultRetryScheduled
 		if err := r.queue.Retry(jobCtx, jobID, retryAt); err != nil {
 			r.log.Error("scheduling the retry failed; the job will run again when its lease expires",
 				"job", jobID, "retry_at", retryAt, "error", err)

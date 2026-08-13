@@ -187,3 +187,41 @@ func TestRetry_ReplacesAnExistingSchedule(t *testing.T) {
 		t.Fatalf("claimed %v, want [a] after retrying it to now", got)
 	}
 }
+
+func TestDepth(t *testing.T) {
+	q, now := newTestQueue(t)
+	ctx := context.Background()
+
+	empty, err := q.Depth(ctx)
+	if err != nil || empty != (Depth{}) {
+		t.Fatalf("an empty queue: Depth = %+v, %v; want all zero", empty, err)
+	}
+
+	_ = q.Enqueue(ctx, epoch.Add(-10*time.Second), "due-old")
+	_ = q.Enqueue(ctx, epoch.Add(-2*time.Second), "due-new")
+	_ = q.Enqueue(ctx, epoch.Add(time.Hour), "later-1")
+	_ = q.Enqueue(ctx, epoch.Add(2*time.Hour), "later-2")
+
+	d, err := q.Depth(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Due != 2 || d.Scheduled != 2 || d.Processing != 0 {
+		t.Fatalf("Depth = %+v, want 2 due, 2 scheduled, 0 processing", d)
+	}
+	if d.OldestDueAge != 10*time.Second {
+		t.Fatalf("OldestDueAge = %v, want 10s: the longest-waiting due job has been due that long", d.OldestDueAge)
+	}
+
+	mustClaim(t, q, 1, time.Minute) // takes the oldest
+	d, _ = q.Depth(ctx)
+	if d.Due != 1 || d.Processing != 1 || d.OldestDueAge != 2*time.Second {
+		t.Fatalf("after a claim Depth = %+v, want 1 due, 1 processing, lag 2s", d)
+	}
+
+	*now = epoch.Add(90 * time.Minute) // the first scheduled job has become due
+	d, _ = q.Depth(ctx)
+	if d.Due != 2 || d.Scheduled != 1 {
+		t.Fatalf("as time passes Depth = %+v, want the first scheduled job counted as due", d)
+	}
+}

@@ -12,6 +12,11 @@ import (
 	"github.com/samirthapa/tern/internal/shared/ratelimit"
 )
 
+// RateLimitObserver is told when a request is refused, so that refusals can be measured.
+type RateLimitObserver interface {
+	RateLimited(scope string)
+}
+
 // RateLimit limits how often each tenant may call the routes it guards. It must run after the
 // authentication middleware, which tells it who the tenant is. scope names what is being limited
 // ("events"), so different routes get separate buckets.
@@ -22,8 +27,8 @@ import (
 //
 // If the limiter itself fails (Redis is down), the request is let through and the failure is
 // logged: refusing customers' events because the limiter is broken would be worse than not
-// limiting for a while. An unlimited limit turns the middleware into a no-op.
-func RateLimit(l ratelimit.Limiter, scope string, limit ratelimit.Limit, log *slog.Logger) func(http.Handler) http.Handler {
+// limiting for a while. An unlimited limit turns the middleware into a no-op. obs is optional.
+func RateLimit(l ratelimit.Limiter, scope string, limit ratelimit.Limit, log *slog.Logger, obs RateLimitObserver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if limit.Unlimited() {
 			return next
@@ -51,6 +56,9 @@ func RateLimit(l ratelimit.Limiter, scope string, limit ratelimit.Limit, log *sl
 			if !d.Allowed {
 				wait := max(1, wholeSeconds(d.RetryAfter))
 				h.Set("Retry-After", strconv.Itoa(wait))
+				if obs != nil {
+					obs.RateLimited(scope)
+				}
 				Error(w, r, apperror.New(apperror.CodeRateLimited,
 					fmt.Sprintf("rate limit exceeded: retry in %d seconds", wait)))
 				return

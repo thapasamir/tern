@@ -335,3 +335,78 @@ func TestEvery_RunsImmediatelyThenRepeatsAndSurvivesErrors(t *testing.T) {
 		t.Fatal("Every did not stop after cancellation")
 	}
 }
+
+// fakeObserver counts jobs by result and how many are running.
+type fakeObserver struct {
+	mu       sync.Mutex
+	started  int
+	finished map[string]int
+}
+
+func newFakeObserver() *fakeObserver { return &fakeObserver{finished: map[string]int{}} }
+
+func (f *fakeObserver) JobStarted() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started++
+}
+
+func (f *fakeObserver) JobFinished(result string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.finished[result]++
+}
+
+func (f *fakeObserver) snapshot() (started int, finished map[string]int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]int{}
+	for k, v := range f.finished {
+		out[k] = v
+	}
+	return f.started, out
+}
+
+func TestRunner_ReportsEveryJobAndItsResult(t *testing.T) {
+	q := &fakeQueue{pending: []string{"ok-1", "ok-2", "fails", "panics"}}
+	obs := newFakeObserver()
+	opts := testOptions(2)
+	opts.Observer = obs
+	start(t, q, processorFunc(func(_ context.Context, id string) error {
+		switch id {
+		case "fails":
+			return errors.New("db down")
+		case "panics":
+			panic("boom")
+		}
+		return nil
+	}), opts)
+
+	waitFor(t, "all four jobs to be reported", func() bool {
+		_, finished := obs.snapshot()
+		return finished[ResultCompleted]+finished[ResultFailed]+finished[ResultPanic] == 4
+	})
+	started, finished := obs.snapshot()
+	if started != 4 || finished[ResultCompleted] != 2 || finished[ResultFailed] != 1 || finished[ResultPanic] != 1 {
+		t.Fatalf("started %d, finished %v; want 4 started, 2 completed, 1 failed, 1 panic", started, finished)
+	}
+}
+
+func TestRunner_ReportsRetriesSeparately(t *testing.T) {
+	q := &fakeQueue{pending: []string{"a"}}
+	obs := newFakeObserver()
+	opts := testOptions(1)
+	opts.Observer = obs
+	start(t, q, retryingProcessor{at: time.Now().Add(time.Hour)}, opts)
+
+	waitFor(t, "the retry to be reported", func() bool {
+		_, finished := obs.snapshot()
+		return finished[ResultRetryScheduled] == 1
+	})
+}
+
+func TestRunner_TheObserverIsOptional(t *testing.T) {
+	q := &fakeQueue{pending: []string{"a"}}
+	start(t, q, processorFunc(func(context.Context, string) error { return nil }), testOptions(1)) // no observer: must not panic
+	waitFor(t, "the job to be acked", func() bool { return len(q.ackedJobs()) == 1 })
+}
