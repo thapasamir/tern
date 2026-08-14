@@ -63,10 +63,12 @@ migrate-new:
 
 # End-to-end checks against real Postgres and Redis (needs: make up migrate-up).
 # smoke.sh covers the HTTP API; the others run a real worker and receiver: smoke_delivery.sh covers
-# delivery, smoke_retries.sh its reliability, smoke_limits.sh the rate limits, smoke_replay.sh replay.
+# delivery, smoke_retries.sh its reliability, smoke_limits.sh the rate limits, smoke_replay.sh replay,
+# smoke_observability.sh the delivery log, stats, retention, metrics and the OpenAPI document.
 smoke:
 	./scripts/smoke.sh
 	./scripts/smoke_delivery.sh
 	./scripts/smoke_retries.sh
 	./scripts/smoke_limits.sh
 	./scripts/smoke_replay.sh
+	./scripts/smoke_observability.sh

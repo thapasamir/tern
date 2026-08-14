@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -15,10 +17,12 @@ import (
 	"github.com/samirthapa/tern/internal/features/delivery/retry"
 	"github.com/samirthapa/tern/internal/features/delivery/sender"
 	"github.com/samirthapa/tern/internal/features/endpoint"
+	"github.com/samirthapa/tern/internal/features/retention"
 	"github.com/samirthapa/tern/internal/shared/cache"
 	"github.com/samirthapa/tern/internal/shared/config"
 	"github.com/samirthapa/tern/internal/shared/database"
 	"github.com/samirthapa/tern/internal/shared/logger"
+	"github.com/samirthapa/tern/internal/shared/metrics"
 	"github.com/samirthapa/tern/internal/shared/queue"
 	"github.com/samirthapa/tern/internal/shared/ratelimit"
 	"github.com/samirthapa/tern/internal/shared/urlguard"
@@ -32,6 +36,7 @@ const (
 
 	recoverInterval = 10 * time.Second
 	sweepInterval   = 15 * time.Second
+	purgeInterval   = time.Hour
 )
 
 func main() {
@@ -65,6 +70,10 @@ func run() error {
 	}
 	defer rdb.Close()
 
+	// What the worker does is measured through observers; the metrics are served on their own port.
+	reg := metrics.NewRegistry()
+	workerMetrics := metrics.NewWorker(reg)
+
 	jobs := queue.New(rdb, delivery.QueueName)
 	repo := delivery.NewRepository(pool)
 	deliveries := delivery.NewService(repo, jobs)
@@ -80,7 +89,12 @@ func run() error {
 		repo,
 		sender.New(cfg.AllowLocalEndpoints, cfg.DeliveryTimeout),
 		endpoints,
-		dispatch.ProcessorConfig{Retry: policy, AutoDisableAfter: cfg.AutoDisableAfter, Throttle: throttle},
+		dispatch.ProcessorConfig{
+			Retry:            policy,
+			AutoDisableAfter: cfg.AutoDisableAfter,
+			Throttle:         throttle,
+			Observer:         workerMetrics,
+		},
 	)
 	if cfg.AllowLocalEndpoints {
 		log.Warn("ALLOW_LOCAL_ENDPOINTS is on: deliveries to private addresses are allowed (development only)")
@@ -92,6 +106,7 @@ func run() error {
 		PollInterval: pollInterval,
 		JobTimeout:   jobTimeout,
 		Lease:        3 * jobTimeout, // comfortably longer than a job can run
+		Observer:     workerMetrics,
 	}, log)
 	if err != nil {
 		return err
@@ -127,9 +142,34 @@ func run() error {
 	wg.Go(func() {
 		worker.Every(ctx, log, cfg.ReconcileInterval, "reconcile overdue deliveries", deliveries.ReconcileOverdue)
 	})
+	// Old events, with their deliveries and attempts, are deleted once past the retention period.
+	purger := retention.NewService(retention.NewRepository(pool), time.Duration(cfg.RetentionDays)*24*time.Hour)
+	wg.Go(func() {
+		worker.Every(ctx, log, purgeInterval, "purge old events", func(ctx context.Context) error {
+			_, err := purger.Purge(ctx)
+			return err
+		})
+	})
+
+	// The worker has no API, so it serves its metrics (and a liveness check) on a separate port.
+	var metricsServer *http.Server
+	if cfg.WorkerMetricsAddr != "" {
+		metricsServer = reg.Server(cfg.WorkerMetricsAddr)
+		wg.Go(func() {
+			log.Info("worker metrics listening", "addr", cfg.WorkerMetricsAddr)
+			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("worker metrics server failed", "error", err)
+			}
+		})
+	}
 
 	<-ctx.Done()
 	log.Info("shutdown signal received; waiting for running deliveries to finish")
+	if metricsServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		_ = metricsServer.Shutdown(shutdownCtx)
+	}
 	wg.Wait()
 	log.Info("worker stopped cleanly")
 	return nil

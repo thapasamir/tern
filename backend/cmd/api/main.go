@@ -11,20 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
+	"github.com/samirthapa/tern/internal/api"
 	"github.com/samirthapa/tern/internal/features/delivery"
-	"github.com/samirthapa/tern/internal/features/endpoint"
-	"github.com/samirthapa/tern/internal/features/event"
-	"github.com/samirthapa/tern/internal/features/tenant"
 	"github.com/samirthapa/tern/internal/shared/cache"
 	"github.com/samirthapa/tern/internal/shared/config"
 	"github.com/samirthapa/tern/internal/shared/database"
-	"github.com/samirthapa/tern/internal/shared/httpx"
 	"github.com/samirthapa/tern/internal/shared/logger"
+	"github.com/samirthapa/tern/internal/shared/metrics"
 	"github.com/samirthapa/tern/internal/shared/queue"
-	"github.com/samirthapa/tern/internal/shared/ratelimit"
-	"github.com/samirthapa/tern/internal/shared/urlguard"
 )
 
 func main() {
@@ -58,44 +52,26 @@ func run() error {
 	}
 	defer rdb.Close()
 
-	r := chi.NewRouter()
-	r.Use(httpx.RequestID, httpx.Logger(log), httpx.Recoverer(log))
+	// Metrics. The queue's depth is read from Redis on every scrape, so it is current whichever
+	// process produced or consumes the jobs.
+	reg := metrics.NewRegistry()
+	reg.RegisterQueueDepth(queueDepth(queue.New(rdb, delivery.QueueName)), log)
+	httpMetrics := metrics.NewHTTP(reg)
 
-	r.Get("/healthz", httpx.Health)
-	r.Get("/readyz", httpx.Ready(map[string]httpx.Checker{
-		"postgres": func(ctx context.Context) error { return pool.Ping(ctx) },
-		"redis":    func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
-	}))
-
-	// Feature modules. Each exposes RegisterRoutes; main only mounts them.
-	tenantMod := tenant.NewModule(pool, cfg.AdminToken)
-	endpointMod := endpoint.NewModule(pool, urlguard.NewValidator(cfg.AllowLocalEndpoints))
-	deliveryMod := delivery.NewModule(pool, queue.New(rdb, delivery.QueueName))
-	// Each tenant may only send so many events per second; the limit is kept in Redis, so it holds
-	// across every API server.
-	limiter := ratelimit.NewRedis(rdb, "tern:ratelimit")
-	limitEvents := httpx.RateLimit(limiter, "events", ratelimit.PerSecond(float64(cfg.EventsPerSecond)), log)
-	eventMod := event.NewModule(pool, deliveryMod.Service(), limitEvents) // events enqueue deliveries through it
 	if cfg.AllowLocalEndpoints {
 		log.Warn("ALLOW_LOCAL_ENDPOINTS is on: SSRF protection is relaxed (development only)")
 	}
-
-	r.Route("/admin", func(r chi.Router) {
-		r.Use(tenantMod.RequireAdmin)
-		tenantMod.RegisterAdminRoutes(r)
-	})
-	// Every future feature (endpoints, events, deliveries) registers inside this group.
-	r.Route("/v1", func(r chi.Router) {
-		r.Use(tenantMod.Authenticate)
-		tenantMod.RegisterRoutes(r)
-		endpointMod.RegisterRoutes(r)
-		eventMod.RegisterRoutes(r)
-		deliveryMod.RegisterRoutes(r)
-	})
-
 	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           r,
+		Addr: cfg.HTTPAddr,
+		Handler: api.NewRouter(api.Deps{
+			Pool:              pool,
+			Redis:             rdb,
+			Config:            cfg,
+			Log:               log,
+			HTTPObserver:      httpMetrics,
+			RateLimitObserver: httpMetrics,
+			MetricsHandler:    reg.Handler(),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -124,4 +100,14 @@ func run() error {
 	}
 	log.Info("api stopped cleanly")
 	return nil
+}
+
+// queueDepth adapts the queue's depth report to the shape the metrics package exposes.
+func queueDepth(q *queue.Redis) func(context.Context) (metrics.QueueDepth, error) {
+	return func(ctx context.Context) (metrics.QueueDepth, error) {
+		d, err := q.Depth(ctx)
+		return metrics.QueueDepth{
+			Due: d.Due, Scheduled: d.Scheduled, Processing: d.Processing, OldestDueAge: d.OldestDueAge,
+		}, err
+	}
 }

@@ -1,0 +1,976 @@
+openapi: 3.0.3
+
+info:
+  title: Tern API
+  version: 1.0.0
+  description: |
+    Tern delivers your events to your customers' webhook endpoints reliably: signed requests,
+    retries with backoff, automatic disabling of endpoints that keep failing, rate limits, replay
+    and a delivery log.
+
+    **Authentication.** Calls under `/v1` are authenticated with a tenant API key sent as
+    `Authorization: Bearer tern_...`. Calls under `/admin` and `/metrics` use the operator's admin
+    token the same way.
+
+    **Pagination.** List endpoints return `{"data": [...], "next_cursor": "..."}`, newest first.
+    Pass `next_cursor` back as `cursor` to get the next page; it is `null` on the last page.
+
+    **Errors.** Every error has the shape `{"error": {"code": "...", "message": "...", "request_id": "..."}}`.
+    Quote the `request_id` when you contact support.
+
+    **Delivery format.** Your endpoint receives a POST with the JSON body
+    `{"id": "<event id>", "type": "...", "created_at": "...", "data": {...}}` and the headers
+    `Webhook-Id` (the event id, stable across retries: use it to de-duplicate), `Webhook-Timestamp`
+    and `Webhook-Signature`. Signatures follow the Standard Webhooks specification: HMAC-SHA256
+    over `<id>.<timestamp>.<body>` keyed with the endpoint's secret (the part after `whsec_`,
+    base64-decoded). Answer with any 2xx status to acknowledge; anything else is retried.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Events
+    description: Send events. Each one is delivered to every active endpoint subscribed to its type.
+  - name: Endpoints
+    description: The URLs your customers receive webhooks at.
+  - name: Deliveries
+    description: The delivery log, and replay of deliveries.
+  - name: Stats
+    description: Delivery health for dashboards.
+  - name: Account
+    description: Your tenant and its API keys.
+  - name: Admin
+    description: Operator-only calls.
+  - name: Operations
+    description: Health checks, metrics and this specification.
+
+security:
+  - ApiKey: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Operations]
+      operationId: getHealth
+      summary: Liveness check
+      description: Answers 200 while the process is up.
+      security: []
+      responses:
+        "200":
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: ok }
+
+  /readyz:
+    get:
+      tags: [Operations]
+      operationId: getReadiness
+      summary: Readiness check
+      description: Answers 200 when Postgres and Redis are reachable, 503 otherwise.
+      security: []
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: A dependency is down.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+
+  /openapi.yaml:
+    get:
+      tags: [Operations]
+      operationId: getOpenAPISpec
+      summary: This specification
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /metrics:
+    get:
+      tags: [Operations]
+      operationId: getMetrics
+      summary: Prometheus metrics
+      description: |
+        Request counts and latency, queue depth and lag, and rate-limit refusals, in the
+        Prometheus text format. Delivery metrics are served by the worker on its own port.
+        Configure Prometheus to send the admin token as a bearer token.
+      security:
+        - AdminToken: []
+      responses:
+        "200":
+          description: The metrics.
+          content:
+            text/plain:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /admin/tenants:
+    post:
+      tags: [Admin]
+      operationId: createTenant
+      summary: Create a tenant
+      description: Creates a tenant and its first API key. The key is shown once.
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateNameRequest" }
+      responses:
+        "201":
+          description: The tenant and its first API key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantWithKey" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /admin/tenants/{tenantID}/api-keys:
+    post:
+      tags: [Admin]
+      operationId: createAPIKeyForTenant
+      summary: Create an API key for a tenant
+      description: For recovery, for instance after a tenant has revoked all of its keys.
+      security:
+        - AdminToken: []
+      parameters:
+        - { $ref: "#/components/parameters/TenantID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateNameRequest" }
+      responses:
+        "201":
+          description: The new key. It is shown once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/APIKeyWithSecret" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/tenant:
+    get:
+      tags: [Account]
+      operationId: getTenant
+      summary: Get your tenant
+      responses:
+        "200":
+          description: The tenant the API key belongs to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/api-keys:
+    get:
+      tags: [Account]
+      operationId: listAPIKeys
+      summary: List API keys
+      description: Never includes the key itself, only its prefix.
+      responses:
+        "200":
+          description: All keys of the tenant, newest first, revoked ones included.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/APIKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Account]
+      operationId: createAPIKey
+      summary: Create an API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateNameRequest" }
+      responses:
+        "201":
+          description: The new key. It is shown once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/APIKeyWithSecret" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/api-keys/{keyID}:
+    delete:
+      tags: [Account]
+      operationId: revokeAPIKey
+      summary: Revoke an API key
+      description: Takes effect immediately. Revoking a key that is already revoked succeeds.
+      parameters:
+        - { $ref: "#/components/parameters/KeyID" }
+      responses:
+        "204": { description: The key is revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/endpoints:
+    get:
+      tags: [Endpoints]
+      operationId: listEndpoints
+      summary: List endpoints
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: A page of endpoints, newest first. Secrets are never included.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EndpointPage" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Endpoints]
+      operationId: createEndpoint
+      summary: Create an endpoint
+      description: |
+        The URL must use https and must not point at a private or internal address. An endpoint
+        with no `event_types` receives every event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEndpointRequest" }
+      responses:
+        "201":
+          description: The endpoint, with its signing secret. The secret is shown only here and when it is rotated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EndpointWithSecret" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/endpoints/{endpointID}:
+    get:
+      tags: [Endpoints]
+      operationId: getEndpoint
+      summary: Get an endpoint
+      parameters:
+        - { $ref: "#/components/parameters/EndpointID" }
+      responses:
+        "200":
+          description: The endpoint. The secret is not included.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Endpoint" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Endpoints]
+      operationId: updateEndpoint
+      summary: Update an endpoint
+      description: >-
+        Only the fields you send change. Sending an empty `event_types` list makes the endpoint
+        receive every event.
+      parameters:
+        - { $ref: "#/components/parameters/EndpointID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateEndpointRequest" }
+      responses:
+        "200":
+          description: The updated endpoint.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Endpoint" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Endpoints]
+      operationId: deleteEndpoint
+      summary: Delete an endpoint
+      description: Also deletes the endpoint's deliveries and their log.
+      parameters:
+        - { $ref: "#/components/parameters/EndpointID" }
+      responses:
+        "204": { description: The endpoint is deleted. }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/endpoints/{endpointID}/rotate-secret:
+    post:
+      tags: [Endpoints]
+      operationId: rotateEndpointSecret
+      summary: Rotate the signing secret
+      description: The old secret stops working immediately.
+      parameters:
+        - { $ref: "#/components/parameters/EndpointID" }
+      responses:
+        "200":
+          description: The endpoint with its new secret.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EndpointWithSecret" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/endpoints/{endpointID}/enable:
+    post:
+      tags: [Endpoints]
+      operationId: enableEndpoint
+      summary: Enable an endpoint
+      description: Resumes deliveries and resets the failure count. Deliveries that failed while the endpoint was disabled can be replayed.
+      parameters:
+        - { $ref: "#/components/parameters/EndpointID" }
+      responses:
+        "200":
+          description: The enabled endpoint.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Endpoint" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/endpoints/{endpointID}/disable:
+    post:
+      tags: [Endpoints]
+      operationId: disableEndpoint
+      summary: Disable an endpoint
+      description: Stops new events from being delivered to it.
+      parameters:
+        - { $ref: "#/components/parameters/EndpointID" }
+      responses:
+        "200":
+          description: The disabled endpoint.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Endpoint" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/endpoints/{endpointID}/replay:
+    post:
+      tags: [Deliveries]
+      operationId: replayFailedDeliveries
+      summary: Replay an endpoint's failed deliveries
+      description: |
+        Creates a new delivery for each failed delivery of the endpoint that was created in
+        `[since, until)` and has not been replayed yet, up to 1000 per call. When `has_more` is true,
+        call again to continue. Calling again with the same range is safe: deliveries that were
+        already replayed are skipped, even when two calls run at the same time.
+      parameters:
+        - { $ref: "#/components/parameters/EndpointID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReplayRequest" }
+      responses:
+        "202":
+          description: The replays were created and queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReplayResult" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The endpoint is disabled. Enable it before replaying.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/events:
+    post:
+      tags: [Events]
+      operationId: createEvent
+      summary: Send an event
+      description: |
+        Stores the event and queues a delivery to every active endpoint subscribed to its type.
+        Delivery is asynchronous, so a new event answers 202. Each tenant is rate limited; see the
+        `RateLimit-*` headers.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            Makes retrying this request safe. A second request with the same key returns the
+            original event (status 200, header `Idempotent-Replayed: true`) and sends nothing again.
+            Keys are scoped to your tenant.
+          schema: { type: string, minLength: 1, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEventRequest" }
+      responses:
+        "202":
+          description: The event was accepted.
+          headers:
+            RateLimit-Limit: { $ref: "#/components/headers/RateLimitLimit" }
+            RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+            RateLimit-Reset: { $ref: "#/components/headers/RateLimitReset" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "200":
+          description: The idempotency key was already used; this is the original event.
+          headers:
+            Idempotent-Replayed:
+              description: Always `true`.
+              schema: { type: string, enum: ["true"] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/events/{eventID}:
+    get:
+      tags: [Events]
+      operationId: getEvent
+      summary: Get an event
+      parameters:
+        - { $ref: "#/components/parameters/EventID" }
+      responses:
+        "200":
+          description: The event.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/events/{eventID}/deliveries:
+    get:
+      tags: [Deliveries]
+      operationId: listEventDeliveries
+      summary: List the deliveries of an event
+      parameters:
+        - { $ref: "#/components/parameters/EventID" }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: A page of deliveries, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryPage" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/deliveries:
+    get:
+      tags: [Deliveries]
+      operationId: listDeliveries
+      summary: The delivery log
+      description: Every filter is optional. Filters combine with AND.
+      parameters:
+        - name: endpoint_id
+          in: query
+          description: Only deliveries to this endpoint.
+          schema: { type: string, format: uuid }
+        - name: event_id
+          in: query
+          description: Only deliveries of this event.
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          description: Only deliveries in this status.
+          schema: { $ref: "#/components/schemas/DeliveryStatus" }
+        - name: since
+          in: query
+          description: Only deliveries created at or after this time (RFC 3339). Encode a `+` offset as `%2B`.
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          description: Only deliveries created before this time (RFC 3339).
+          schema: { type: string, format: date-time }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: A page of deliveries, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryPage" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/deliveries/{deliveryID}:
+    get:
+      tags: [Deliveries]
+      operationId: getDelivery
+      summary: Get a delivery with its attempts
+      description: Each attempt records the HTTP status, the start of the response body, how long it took and why it failed.
+      parameters:
+        - { $ref: "#/components/parameters/DeliveryID" }
+      responses:
+        "200":
+          description: The delivery and every attempt made for it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryDetail" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/deliveries/{deliveryID}/replay:
+    post:
+      tags: [Deliveries]
+      operationId: replayDelivery
+      summary: Replay a delivery
+      description: |
+        Creates a new delivery of the same event to the same endpoint, linked to this one through
+        `replayed_from`. The original delivery's log is left untouched. A succeeded delivery can be
+        replayed too.
+      parameters:
+        - { $ref: "#/components/parameters/DeliveryID" }
+      responses:
+        "202":
+          description: The replay was created and queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Delivery" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The delivery is still pending, or its endpoint is disabled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/stats/deliveries:
+    get:
+      tags: [Stats]
+      operationId: getDeliveryStats
+      summary: Delivery statistics
+      description: |
+        Counts, success rate, response times and a time series for a period. The default period is
+        the last 24 hours in hourly buckets; the longest allowed is 31 days.
+      parameters:
+        - name: since
+          in: query
+          description: Start of the period, inclusive (RFC 3339). Defaults to 24 hours before `until`.
+          schema: { type: string, format: date-time }
+        - name: until
+          in: query
+          description: End of the period, exclusive (RFC 3339). Defaults to now.
+          schema: { type: string, format: date-time }
+        - name: endpoint_id
+          in: query
+          description: Only count deliveries to this endpoint.
+          schema: { type: string, format: uuid }
+        - name: interval
+          in: query
+          description: Width of the series buckets. Buckets are cut in UTC.
+          schema: { type: string, enum: [hour, day], default: hour }
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatsReport" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    ApiKey:
+      type: http
+      scheme: bearer
+      description: A tenant API key, `tern_...`.
+    AdminToken:
+      type: http
+      scheme: bearer
+      description: The operator's admin token.
+
+  parameters:
+    TenantID:
+      name: tenantID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    KeyID:
+      name: keyID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EndpointID:
+      name: endpointID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EventID:
+      name: eventID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DeliveryID:
+      name: deliveryID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      description: Page size.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` of the previous page.
+      schema: { type: string, format: uuid }
+
+  headers:
+    RateLimitLimit:
+      description: "The size of the tenant's bucket: how many requests may arrive at once."
+      schema: { type: integer }
+    RateLimitRemaining:
+      description: How many more requests would be accepted right now.
+      schema: { type: integer }
+    RateLimitReset:
+      description: Seconds until the bucket is full again.
+      schema: { type: integer }
+
+  responses:
+    Invalid:
+      description: The request is malformed or breaks a rule. `error.message` says which.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: The API key or admin token is missing, wrong or revoked.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: It does not exist, or belongs to another tenant.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: The tenant is sending events too fast. Wait `Retry-After` seconds.
+      headers:
+        Retry-After:
+          description: Seconds to wait before trying again.
+          schema: { type: integer, minimum: 1 }
+        RateLimit-Limit: { $ref: "#/components/headers/RateLimitLimit" }
+        RateLimit-Remaining: { $ref: "#/components/headers/RateLimitRemaining" }
+        RateLimit-Reset: { $ref: "#/components/headers/RateLimitReset" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [invalid_request, unauthorized, forbidden, not_found, conflict, rate_limited, internal_error]
+            message: { type: string }
+            request_id: { type: string }
+
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        checks:
+          type: object
+          additionalProperties: { type: string, enum: [up, down] }
+
+    CreateNameRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+
+    Tenant:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+
+    APIKey:
+      type: object
+      required: [id, name, prefix, created_at, last_used_at, revoked_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix:
+          type: string
+          description: The first characters of the key, to recognise it by.
+          example: tern_AbC123
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+
+    APIKeyWithSecret:
+      allOf:
+        - $ref: "#/components/schemas/APIKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: The full key. It is shown only once.
+              example: tern_AbC123...
+
+    TenantWithKey:
+      type: object
+      required: [tenant, api_key]
+      properties:
+        tenant: { $ref: "#/components/schemas/Tenant" }
+        api_key: { $ref: "#/components/schemas/APIKeyWithSecret" }
+
+    CreateEndpointRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, maxLength: 2048, example: "https://example.com/webhooks" }
+        description: { type: string, maxLength: 500 }
+        event_types:
+          type: array
+          maxItems: 50
+          description: Event types to receive. Empty or omitted means every event.
+          items: { $ref: "#/components/schemas/EventType" }
+
+    UpdateEndpointRequest:
+      type: object
+      properties:
+        url: { type: string, maxLength: 2048 }
+        description: { type: string, maxLength: 500 }
+        event_types:
+          type: array
+          maxItems: 50
+          items: { $ref: "#/components/schemas/EventType" }
+
+    EventType:
+      type: string
+      maxLength: 128
+      pattern: '^[a-z0-9]+(?:[._-][a-z0-9]+)*$'
+      description: Lowercase words joined by `.`, `_` or `-`.
+      example: invoice.paid
+
+    Endpoint:
+      type: object
+      required: [id, url, description, event_types, status, disabled_reason, disabled_at, consecutive_failures, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        description: { type: string }
+        event_types:
+          type: array
+          items: { $ref: "#/components/schemas/EventType" }
+        status: { type: string, enum: [active, disabled] }
+        disabled_reason:
+          type: string
+          nullable: true
+          description: Why the endpoint is disabled, for instance after too many failed attempts.
+        disabled_at: { type: string, format: date-time, nullable: true }
+        consecutive_failures:
+          type: integer
+          description: Failed attempts in a row. Reaching the limit disables the endpoint.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    EndpointWithSecret:
+      allOf:
+        - $ref: "#/components/schemas/Endpoint"
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: The signing secret, shown only on creation and rotation.
+              example: whsec_...
+
+    EndpointPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Endpoint" }
+        next_cursor: { type: string, format: uuid, nullable: true }
+
+    CreateEventRequest:
+      type: object
+      required: [type, payload]
+      properties:
+        type: { $ref: "#/components/schemas/EventType" }
+        payload:
+          type: object
+          description: Any JSON object, up to 256 KiB. Delivered as `data`.
+          additionalProperties: true
+
+    Event:
+      type: object
+      required: [id, type, payload, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/EventType" }
+        payload: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
+    DeliveryStatus:
+      type: string
+      enum: [pending, succeeded, failed]
+      description: |
+        `pending` until the delivery has succeeded or run out of attempts, including while a retry
+        is scheduled; then `succeeded` or `failed`.
+
+    Delivery:
+      type: object
+      required: [id, event_id, endpoint_id, status, attempt_count, replayed_from, next_attempt_at, created_at, completed_at]
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/DeliveryStatus" }
+        attempt_count: { type: integer }
+        replayed_from:
+          type: string
+          format: uuid
+          nullable: true
+          description: The delivery this one repeats, if it was created by a replay.
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the next retry is due, for a delivery that failed and will be retried.
+        created_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+
+    Attempt:
+      type: object
+      required: [attempt_number, status_code, error, response_body, duration_ms, started_at]
+      properties:
+        attempt_number: { type: integer }
+        status_code:
+          type: integer
+          nullable: true
+          description: The HTTP status the endpoint answered with, or null if there was no response.
+        error: { type: string, nullable: true, description: Why the attempt failed. }
+        response_body:
+          type: string
+          nullable: true
+          description: The start of the response, for debugging.
+        duration_ms: { type: integer }
+        started_at: { type: string, format: date-time }
+
+    DeliveryDetail:
+      allOf:
+        - $ref: "#/components/schemas/Delivery"
+        - type: object
+          required: [attempts]
+          properties:
+            attempts:
+              type: array
+              items: { $ref: "#/components/schemas/Attempt" }
+
+    DeliveryPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Delivery" }
+        next_cursor: { type: string, format: uuid, nullable: true }
+
+    ReplayRequest:
+      type: object
+      required: [since]
+      properties:
+        since:
+          type: string
+          format: date-time
+          description: Replay failed deliveries created at or after this time.
+        until:
+          type: string
+          format: date-time
+          description: Replay failed deliveries created before this time. Defaults to now.
+
+    ReplayResult:
+      type: object
+      required: [replayed, has_more]
+      properties:
+        replayed: { type: integer, description: How many deliveries were replayed by this call. }
+        has_more: { type: boolean, description: True when more matched than one call replays. }
+
+    StatsReport:
+      type: object
+      required: [since, until, interval, deliveries, success_rate, response_time_ms, series]
+      properties:
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+        interval: { type: string, enum: [hour, day] }
+        deliveries:
+          type: object
+          required: [total, succeeded, failed, pending]
+          properties:
+            total: { type: integer }
+            succeeded: { type: integer }
+            failed: { type: integer }
+            pending: { type: integer }
+        success_rate:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: Succeeded divided by finished (succeeded plus failed). Null when nothing has finished.
+        response_time_ms:
+          type: object
+          description: How long customers' servers took to answer, over attempts that got an HTTP response.
+          required: [attempts, avg, p50, p95]
+          properties:
+            attempts: { type: integer }
+            avg: { type: number }
+            p50: { type: number }
+            p95: { type: number }
+        series:
+          type: array
+          description: One bucket per interval across the period, empty ones included.
+          items:
+            type: object
+            required: [start, succeeded, failed, pending]
+            properties:
+              start: { type: string, format: date-time }
+              succeeded: { type: integer }
+              failed: { type: integer }
+              pending: { type: integer }
