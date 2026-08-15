@@ -12,12 +12,14 @@ import (
 )
 
 type Config struct {
-	Env             string
-	HTTPAddr        string
-	LogLevel        string
-	DatabaseURL     string
-	RedisURL        string
-	AdminToken      string
+	Env         string
+	HTTPAddr    string
+	LogLevel    string
+	DatabaseURL string
+	RedisURL    string
+	AdminToken  string
+	// SecretsKey is the base64 AES-256 key that encrypts endpoint signing secrets at rest.
+	SecretsKey      string
 	ShutdownTimeout time.Duration
 
 	// AllowLocalEndpoints lets customers register http:// and private/loopback webhook URLs, and
@@ -97,6 +99,7 @@ func Load() (Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		RedisURL:    os.Getenv("REDIS_URL"),
 		AdminToken:  os.Getenv("ADMIN_TOKEN"),
+		SecretsKey:  os.Getenv("SECRETS_ENCRYPTION_KEY"),
 	}
 
 	var err error
@@ -148,6 +151,9 @@ func (c Config) validate() error {
 	}
 	if c.AdminToken == "" {
 		missing = append(missing, "ADMIN_TOKEN")
+	}
+	if c.SecretsKey == "" {
+		missing = append(missing, "SECRETS_ENCRYPTION_KEY")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required env vars: %s", strings.Join(missing, ", "))

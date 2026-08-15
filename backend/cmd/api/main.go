@@ -19,6 +19,7 @@ import (
 	"github.com/samirthapa/tern/internal/shared/logger"
 	"github.com/samirthapa/tern/internal/shared/metrics"
 	"github.com/samirthapa/tern/internal/shared/queue"
+	"github.com/samirthapa/tern/internal/shared/secretbox"
 )
 
 func main() {
@@ -35,6 +36,11 @@ func run() error {
 	}
 	log := logger.New(cfg.LogLevel, cfg.IsProduction())
 	slog.SetDefault(log)
+
+	secrets, err := secretbox.New(cfg.SecretsKey)
+	if err != nil {
+		return fmt.Errorf("SECRETS_ENCRYPTION_KEY: %w", err)
+	}
 
 	// Cancelled on SIGINT/SIGTERM; drives graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -68,6 +74,7 @@ func run() error {
 			Redis:             rdb,
 			Config:            cfg,
 			Log:               log,
+			Secrets:           secrets,
 			HTTPObserver:      httpMetrics,
 			RateLimitObserver: httpMetrics,
 			MetricsHandler:    reg.Handler(),

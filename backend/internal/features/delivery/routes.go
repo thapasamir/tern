@@ -5,6 +5,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/samirthapa/tern/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/secretbox"
 )
 
 // Module wires the API side of the delivery feature. The worker builds a Processor instead
@@ -14,8 +15,8 @@ type Module struct {
 	ctrl *Controller
 }
 
-func NewModule(pool *pgxpool.Pool, jobs JobQueue) *Module {
-	svc := NewService(NewRepository(pool), jobs)
+func NewModule(pool *pgxpool.Pool, box *secretbox.Box, jobs JobQueue) *Module {
+	svc := NewService(NewRepository(pool, box), jobs)
 	return &Module{svc: svc, ctrl: NewController(svc)}
 }
 

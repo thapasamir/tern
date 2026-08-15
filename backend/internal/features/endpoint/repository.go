@@ -12,6 +12,7 @@ import (
 	"github.com/samirthapa/tern/internal/shared/apperror"
 	"github.com/samirthapa/tern/internal/shared/database"
 	"github.com/samirthapa/tern/internal/shared/pagination"
+	"github.com/samirthapa/tern/internal/shared/secretbox"
 )
 
 // ErrNotFound is returned by repositories when no row matches the tenant and ID.
@@ -43,22 +44,30 @@ type Repository interface {
 
 // pgRepository implements Repository on top of the sqlc-generated queries.
 // SQL lives in queries.sql; run `make sqlc` after changing it.
+//
+// Signing secrets are encrypted on the way in and decrypted on the way out, so the rest of the
+// code only ever sees plaintext and the database never holds it.
 type pgRepository struct {
-	q *endpointdb.Queries
+	q   *endpointdb.Queries
+	box *secretbox.Box
 }
 
-func NewRepository(pool *pgxpool.Pool) Repository {
-	return &pgRepository{q: endpointdb.New(pool)}
+func NewRepository(pool *pgxpool.Pool, box *secretbox.Box) Repository {
+	return &pgRepository{q: endpointdb.New(pool), box: box}
 }
 
 func (r *pgRepository) Create(ctx context.Context, e Endpoint) error {
-	err := r.q.InsertEndpoint(ctx, endpointdb.InsertEndpointParams{
+	sealed, err := r.box.Seal(e.Secret)
+	if err != nil {
+		return fmt.Errorf("seal endpoint secret: %w", err)
+	}
+	err = r.q.InsertEndpoint(ctx, endpointdb.InsertEndpointParams{
 		ID:          e.ID,
 		TenantID:    e.TenantID,
 		URL:         e.URL,
 		Description: e.Description,
 		EventTypes:  nonNil(e.EventTypes),
-		Secret:      e.Secret,
+		Secret:      sealed,
 		Status:      string(e.Status),
 		CreatedAt:   e.CreatedAt,
 		UpdatedAt:   e.UpdatedAt,
@@ -74,7 +83,7 @@ func (r *pgRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (Endpoin
 	if err != nil {
 		return Endpoint{}, database.WrapErr(err, "get endpoint")
 	}
-	return toDomain(row), nil
+	return r.toDomain(row)
 }
 
 func (r *pgRepository) List(ctx context.Context, tenantID uuid.UUID, p pagination.Params) ([]Endpoint, error) {
@@ -88,7 +97,11 @@ func (r *pgRepository) List(ctx context.Context, tenantID uuid.UUID, p paginatio
 	}
 	out := make([]Endpoint, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, toDomain(row))
+		e, err := r.toDomain(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
 	}
 	return out, nil
 }
@@ -106,8 +119,12 @@ func (r *pgRepository) Update(ctx context.Context, e Endpoint) error {
 }
 
 func (r *pgRepository) UpdateSecret(ctx context.Context, tenantID, id uuid.UUID, secret string, at time.Time) error {
+	sealed, err := r.box.Seal(secret)
+	if err != nil {
+		return fmt.Errorf("seal endpoint secret: %w", err)
+	}
 	n, err := r.q.UpdateEndpointSecret(ctx, endpointdb.UpdateEndpointSecretParams{
-		Secret: secret, At: at, ID: id, TenantID: tenantID,
+		Secret: sealed, At: at, ID: id, TenantID: tenantID,
 	})
 	return database.RequireRow(n, err, "update endpoint secret")
 }
@@ -154,21 +171,25 @@ func (r *pgRepository) DisableIfActive(ctx context.Context, tenantID, id uuid.UU
 	return n == 1, nil
 }
 
-func toDomain(row endpointdb.Endpoint) Endpoint {
+func (r *pgRepository) toDomain(row endpointdb.Endpoint) (Endpoint, error) {
+	secret, err := r.box.Open(row.Secret)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("endpoint %s: %w", row.ID, err)
+	}
 	return Endpoint{
 		ID:                  row.ID,
 		TenantID:            row.TenantID,
 		URL:                 row.URL,
 		Description:         row.Description,
 		EventTypes:          row.EventTypes,
-		Secret:              row.Secret,
+		Secret:              secret,
 		Status:              Status(row.Status),
 		DisabledReason:      row.DisabledReason,
 		DisabledAt:          row.DisabledAt,
 		ConsecutiveFailures: int(row.ConsecutiveFailures),
 		CreatedAt:           row.CreatedAt,
 		UpdatedAt:           row.UpdatedAt,
-	}
+	}, nil
 }
 
 // nonNil makes sure a nil slice is stored as an empty array, not NULL (the column is NOT NULL).

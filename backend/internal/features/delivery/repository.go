@@ -15,6 +15,7 @@ import (
 	"github.com/samirthapa/tern/internal/shared/database"
 	"github.com/samirthapa/tern/internal/shared/ids"
 	"github.com/samirthapa/tern/internal/shared/pagination"
+	"github.com/samirthapa/tern/internal/shared/secretbox"
 )
 
 // ErrNotFound is returned by repositories when no row matches.
@@ -62,16 +63,21 @@ type Repository interface {
 type pgRepository struct {
 	pool *pgxpool.Pool
 	q    *deliverydb.Queries
+	box  *secretbox.Box // opens the endpoint's signing secret, which is stored encrypted
 }
 
-func NewRepository(pool *pgxpool.Pool) Repository {
-	return &pgRepository{pool: pool, q: deliverydb.New(pool)}
+func NewRepository(pool *pgxpool.Pool, box *secretbox.Box) Repository {
+	return &pgRepository{pool: pool, q: deliverydb.New(pool), box: box}
 }
 
 func (r *pgRepository) GetWork(ctx context.Context, id uuid.UUID) (Work, error) {
 	row, err := r.q.GetDeliveryWork(ctx, id)
 	if err != nil {
 		return Work{}, database.WrapErr(err, "get delivery work")
+	}
+	secret, err := r.box.Open(row.EndpointSecret)
+	if err != nil {
+		return Work{}, fmt.Errorf("delivery %s: %w", id, err)
 	}
 	return Work{
 		DeliveryID:     row.DeliveryID,
@@ -85,7 +91,7 @@ func (r *pgRepository) GetWork(ctx context.Context, id uuid.UUID) (Work, error) 
 		Payload:        row.EventPayload,
 		EventCreatedAt: row.EventCreatedAt,
 		EndpointURL:    row.EndpointURL,
-		EndpointSecret: row.EndpointSecret,
+		EndpointSecret: secret,
 		EndpointActive: row.EndpointActive,
 	}, nil
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/samirthapa/tern/internal/shared/metrics"
 	"github.com/samirthapa/tern/internal/shared/queue"
 	"github.com/samirthapa/tern/internal/shared/ratelimit"
+	"github.com/samirthapa/tern/internal/shared/secretbox"
 	"github.com/samirthapa/tern/internal/shared/urlguard"
 	"github.com/samirthapa/tern/internal/worker"
 )
@@ -54,6 +55,11 @@ func run() error {
 	log := logger.New(cfg.LogLevel, cfg.IsProduction())
 	slog.SetDefault(log)
 
+	secrets, err := secretbox.New(cfg.SecretsKey)
+	if err != nil {
+		return fmt.Errorf("SECRETS_ENCRYPTION_KEY: %w", err)
+	}
+
 	// Cancelled on SIGINT/SIGTERM; drives graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -75,10 +81,10 @@ func run() error {
 	workerMetrics := metrics.NewWorker(reg)
 
 	jobs := queue.New(rdb, delivery.QueueName)
-	repo := delivery.NewRepository(pool)
+	repo := delivery.NewRepository(pool, secrets)
 	deliveries := delivery.NewService(repo, jobs)
 	// The endpoint feature owns an endpoint's health; the processor reports each attempt to it.
-	endpoints := endpoint.NewService(endpoint.NewRepository(pool), urlguard.NewValidator(cfg.AllowLocalEndpoints))
+	endpoints := endpoint.NewService(endpoint.NewRepository(pool, secrets), urlguard.NewValidator(cfg.AllowLocalEndpoints))
 	policy := retry.NewPolicy(cfg.RetrySchedule)
 	// Each endpoint may only receive so many deliveries per second, whichever worker sends them.
 	throttle := dispatch.NewThrottle(

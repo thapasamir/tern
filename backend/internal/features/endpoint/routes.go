@@ -5,6 +5,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/samirthapa/tern/internal/shared/httpx"
+	"github.com/samirthapa/tern/internal/shared/secretbox"
 )
 
 // Module wires the endpoint feature together and is the only thing main.go needs to know about.
@@ -13,8 +14,8 @@ type Module struct {
 	ctrl *Controller
 }
 
-func NewModule(pool *pgxpool.Pool, urls URLValidator) *Module {
-	svc := NewService(NewRepository(pool), urls)
+func NewModule(pool *pgxpool.Pool, box *secretbox.Box, urls URLValidator) *Module {
+	svc := NewService(NewRepository(pool, box), urls)
 	return &Module{svc: svc, ctrl: NewController(svc)}
 }
 

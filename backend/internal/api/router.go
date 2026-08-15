@@ -22,6 +22,7 @@ import (
 	"github.com/samirthapa/tern/internal/shared/httpx"
 	"github.com/samirthapa/tern/internal/shared/queue"
 	"github.com/samirthapa/tern/internal/shared/ratelimit"
+	"github.com/samirthapa/tern/internal/shared/secretbox"
 	"github.com/samirthapa/tern/internal/shared/urlguard"
 )
 
@@ -37,6 +38,8 @@ type Deps struct {
 	Redis  *redis.Client
 	Config config.Config
 	Log    *slog.Logger
+	// Secrets encrypts endpoint signing secrets at rest.
+	Secrets *secretbox.Box
 
 	// HTTPObserver, if set, is told about every request, for metrics.
 	HTTPObserver httpx.HTTPObserver
@@ -64,8 +67,8 @@ func NewRouter(d Deps) *chi.Mux {
 
 	// Feature modules. Each exposes RegisterRoutes; this is where they are mounted.
 	tenantMod := tenant.NewModule(d.Pool, d.Config.AdminToken)
-	endpointMod := endpoint.NewModule(d.Pool, urlguard.NewValidator(d.Config.AllowLocalEndpoints))
-	deliveryMod := delivery.NewModule(d.Pool, queue.New(d.Redis, delivery.QueueName))
+	endpointMod := endpoint.NewModule(d.Pool, d.Secrets, urlguard.NewValidator(d.Config.AllowLocalEndpoints))
+	deliveryMod := delivery.NewModule(d.Pool, d.Secrets, queue.New(d.Redis, delivery.QueueName))
 	statsMod := stats.NewModule(d.Pool)
 
 	// Each tenant may only send so many events per second; the limit is kept in Redis, so it holds

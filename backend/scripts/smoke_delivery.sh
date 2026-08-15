@@ -58,6 +58,12 @@ create_endpoint "$KEY" "http://$RECEIVER/invoice" '["invoice.paid"]'; EP_INVOICE
 create_endpoint "$KEY" "http://$RECEIVER/fail" '[]';                  EP_FAIL=$ENDPOINT_ID;    SECRETS="$SECRETS,$ENDPOINT_SECRET"
 create_endpoint "$KEY" "http://$RECEIVER/slow?ms=3000" '[]';          EP_SLOW=$ENDPOINT_ID;    SECRETS="$SECRETS,$ENDPOINT_SECRET"
 create_endpoint "$KEY" "http://$RECEIVER/status/410" '[]';            EP_GONE=$ENDPOINT_ID;    SECRETS="$SECRETS,$ENDPOINT_SECRET"
+
+# The receiver verifies every signature against the plaintext secret, so a delivery that arrives
+# proves the worker can decrypt it; here we check that the database never holds the plaintext.
+STORED=$(docker exec "$(docker compose -f ../docker-compose.yml ps -q postgres)" psql -U tern -d tern -tA -c "SELECT secret FROM endpoints WHERE id = '$EP_GONE'")
+expect "the signing secret is stored encrypted" enc:v1: "${STORED:0:7}"
+expect "and is not the secret the API returned" 0 "$([[ "$STORED" == *"$ENDPOINT_SECRET"* ]] && echo 1 || echo 0)"
 create_endpoint "$KEY" "http://$RECEIVER/disabled" '[]';              EP_DISABLED=$ENDPOINT_ID; SECRETS="$SECRETS,$ENDPOINT_SECRET"
 call POST "/v1/endpoints/$EP_DISABLED/disable" "$KEY"
 expect "disabled endpoint is disabled" disabled "$(field 'd["status"]')"
