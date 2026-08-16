@@ -31,6 +31,46 @@ services:
       timeout: 3s
       retries: 10
 
+  # ---- The application itself --------------------------------------------------------------
+  # Not started by `make up` (which only needs the two databases for local development). Run the
+  # whole system with:  docker compose --profile app up --build
+  # It needs a backend/.env with ADMIN_TOKEN and SECRETS_ENCRYPTION_KEY; the addresses of the
+  # databases are overridden below to point at the containers.
+
+  migrate:
+    profiles: ["app"]
+    build: { context: ./backend, target: migrate }
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://tern:tern@postgres:5432/tern?sslmode=disable
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    profiles: ["app"]
+    build: { context: ./backend, target: api }
+    env_file: ./backend/.env
+    environment: &app-env
+      DATABASE_URL: postgres://tern:tern@postgres:5432/tern?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      HTTP_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  worker:
+    profiles: ["app"]
+    build: { context: ./backend, target: worker }
+    env_file: ./backend/.env
+    environment: *app-env
+    ports:
+      - "9102:9102"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
 volumes:
   pgdata:
   redisdata:
