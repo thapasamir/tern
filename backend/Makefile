@@ -1,4 +1,4 @@
-include .env
+-include .env
 export
 
 GOOSE = go run github.com/pressly/goose/v3/cmd/goose@v3.24.1
@@ -7,7 +7,7 @@ STATICCHECK = go run honnef.co/go/tools/cmd/staticcheck@v0.8.2
 # (building it from source fails on recent macOS SDKs).
 SQLC  = docker run --rm -v "$(CURDIR):/src" -w /src sqlc/sqlc:1.28.0
 
-.PHONY: up down run worker receiver build test vet lint smoke sqlc sqlc-check migrate-up migrate-down migrate-status migrate-new
+.PHONY: up down run worker receiver build test test-integration loadtest vet lint smoke sqlc sqlc-check migrate-up migrate-down migrate-status migrate-new
 
 # Regenerate type-safe Go code from migrations/ and each feature's queries.sql.
 sqlc:
@@ -40,6 +40,14 @@ build:
 
 test:
 	go test ./...
+
+# Throughput and latency against a running stack; see cmd/loadtest for how to start it.
+loadtest:
+	go run ./cmd/loadtest $(ARGS)
+
+# Real Postgres and Redis in throwaway containers (needs Docker; takes about a minute).
+test-integration:
+	go test -tags integration -race -count=1 ./internal/integration/...
 
 vet:
 	go vet ./...
