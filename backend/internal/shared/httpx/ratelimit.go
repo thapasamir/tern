@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -29,21 +30,45 @@ type RateLimitObserver interface {
 // logged: refusing customers' events because the limiter is broken would be worse than not
 // limiting for a while. An unlimited limit turns the middleware into a no-op. obs is optional.
 func RateLimit(l ratelimit.Limiter, scope string, limit ratelimit.Limit, log *slog.Logger, obs RateLimitObserver) func(http.Handler) http.Handler {
+	return rateLimit(l, scope, limit, log, obs, func(r *http.Request) (string, bool) {
+		tenantID, ok := TenantID(r.Context())
+		return tenantID.String(), ok // not an authenticated route: nobody to limit
+	})
+}
+
+// RateLimitByClient is RateLimit for routes that are reached before anyone has authenticated, such
+// as logging in: it limits by the client's network address, which is how a password guesser is
+// told apart from everyone else. It trusts the connection's remote address, so behind a reverse
+// proxy the proxy must pass the real client address through (for example with chi's RealIP).
+func RateLimitByClient(l ratelimit.Limiter, scope string, limit ratelimit.Limit, log *slog.Logger, obs RateLimitObserver) func(http.Handler) http.Handler {
+	return rateLimit(l, scope, limit, log, obs, func(r *http.Request) (string, bool) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		return host, host != ""
+	})
+}
+
+// rateLimit is the shared middleware. identify names who a request counts against, and reports
+// false for a request that has nobody to limit.
+func rateLimit(l ratelimit.Limiter, scope string, limit ratelimit.Limit, log *slog.Logger, obs RateLimitObserver,
+	identify func(*http.Request) (string, bool)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if limit.Unlimited() {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tenantID, ok := TenantID(r.Context())
+			who, ok := identify(r)
 			if !ok {
-				next.ServeHTTP(w, r) // not an authenticated route: nobody to limit
+				next.ServeHTTP(w, r)
 				return
 			}
 
-			d, err := l.Allow(r.Context(), scope+":"+tenantID.String(), limit)
+			d, err := l.Allow(r.Context(), scope+":"+who, limit)
 			if err != nil {
 				log.Error("rate limiter failed; letting the request through",
-					"scope", scope, "tenant_id", tenantID, "error", err)
+					"scope", scope, "who", who, "error", err)
 				next.ServeHTTP(w, r)
 				return
 			}

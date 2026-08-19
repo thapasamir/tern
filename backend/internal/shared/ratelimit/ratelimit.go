@@ -29,6 +29,13 @@ func PerSecond(rate float64) Limit {
 	return Limit{Rate: rate, Burst: max(1, int(math.Ceil(2*rate)))}
 }
 
+// PerMinute returns a Limit of n requests per minute that allows a burst of n at once. It suits
+// routes where a few attempts are normal and many are not, such as logging in. Zero or less means
+// unlimited.
+func PerMinute(n int) Limit {
+	return Limit{Rate: float64(n) / 60, Burst: max(1, n)}
+}
+
 // Unlimited reports whether the limit is switched off.
 func (l Limit) Unlimited() bool { return l.Rate <= 0 }
 

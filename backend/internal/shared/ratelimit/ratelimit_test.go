@@ -204,3 +204,13 @@ func TestPerSecond(t *testing.T) {
 		}
 	}
 }
+
+func TestPerMinute(t *testing.T) {
+	l := PerMinute(30)
+	if l.Rate != 0.5 || l.Burst != 30 {
+		t.Fatalf("PerMinute(30) = %+v, want 0.5 tokens/s and a burst of 30", l)
+	}
+	if !PerMinute(0).Unlimited() {
+		t.Fatal("PerMinute(0) must be unlimited")
+	}
+}

@@ -161,3 +161,33 @@ func TestRateLimit_ReportsRefusalsButNotAllowedRequests(t *testing.T) {
 		t.Fatalf("observed %v, want one refusal in the scope \"events\"", obs.scopes)
 	}
 }
+
+func TestRateLimitByClient_CountsAgainstTheRemoteAddressWithoutItsPort(t *testing.T) {
+	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: true, Remaining: 4}}
+	mw := RateLimitByClient(l, "auth", testLimit, testutil.QuietLogger(), nil)
+
+	for _, remote := range []string{"203.0.113.9:51000", "203.0.113.9:51001", "198.51.100.2:40000"} {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.RemoteAddr = remote
+		mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	want := []string{"auth:203.0.113.9", "auth:203.0.113.9", "auth:198.51.100.2"}
+	if strings.Join(l.keys, ",") != strings.Join(want, ",") {
+		t.Fatalf("buckets = %v, want %v (one per address, not per connection)", l.keys, want)
+	}
+}
+
+func TestRateLimitByClient_RefusesWhenTheBucketIsEmpty(t *testing.T) {
+	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: false, RetryAfter: time.Second}}
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	req.RemoteAddr = "203.0.113.9:51000"
+	rec := httptest.NewRecorder()
+	reached := false
+	RateLimitByClient(l, "auth", testLimit, testutil.QuietLogger(), nil)(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })).ServeHTTP(rec, req)
+
+	if reached || rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d, reached %v; want 429 and the handler not run", rec.Code, reached)
+	}
+}
