@@ -71,8 +71,24 @@ type Event struct {
 	CreatedAt      time.Time
 }
 
+type Session struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
 type Tenant struct {
 	ID        uuid.UUID
 	Name      string
 	CreatedAt time.Time
+}
+
+type User struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	Email        string
+	PasswordHash string
+	CreatedAt    time.Time
 }

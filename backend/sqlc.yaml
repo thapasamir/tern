@@ -102,3 +102,14 @@ sql:
         sql_package: pgx/v5
         emit_empty_slices: true
         overrides: *overrides
+
+  - engine: postgresql
+    schema: migrations
+    queries: internal/features/user/queries.sql
+    gen:
+      go:
+        package: userdb
+        out: internal/features/user/db
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        overrides: *overrides
