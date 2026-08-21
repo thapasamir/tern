@@ -201,13 +201,17 @@ func TestSpec_ProtectedRoutesDeclareTheirSecurity(t *testing.T) {
 			if !explicit || len(sec) == 0 || sec[0].(document)["AdminToken"] == nil {
 				t.Errorf("%s needs the admin token, and the spec must say so", name)
 			}
-		case path == "/healthz" || path == "/readyz" || path == "/openapi.yaml":
+		case path == "/auth/logout" || path == "/auth/me":
+			if !explicit || len(sec) != 1 || sec[0].(document)["Session"] == nil {
+				t.Errorf("%s needs a session token, and only that, and the spec must say so", name)
+			}
+		case path == "/auth/signup" || path == "/auth/login" || path == "/healthz" || path == "/readyz" || path == "/openapi.yaml":
 			if !explicit || len(sec) != 0 {
 				t.Errorf("%s is public, so it must opt out of the default security with an empty list", name)
 			}
 		case strings.HasPrefix(path, "/v1/"):
 			if explicit {
-				t.Errorf("%s should use the default API key security", name)
+				t.Errorf("%s should use the default security (API key or session)", name)
 			}
 		}
 	}

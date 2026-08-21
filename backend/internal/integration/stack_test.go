@@ -39,14 +39,19 @@ type stack struct {
 }
 
 // startStack starts an API server and a worker loop, both stopped when the test ends.
-// retrySchedule is the delay after each failed attempt; nil means failures are final.
-func startStack(t *testing.T, retrySchedule []time.Duration) *stack {
+// retrySchedule is the delay after each failed attempt; nil means failures are final. Each tweak
+// may change the configuration the API starts with.
+func startStack(t *testing.T, retrySchedule []time.Duration, tweaks ...func(*config.Config)) *stack {
 	t.Helper()
 	secrets, err := secretbox.New(base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", secretbox.KeyBytes))))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Rate limits are off unless a test turns one on: every test signs up from the same address.
 	cfg := config.Config{AdminToken: adminToken, AllowLocalEndpoints: true, EventsPerSecond: 1000}
+	for _, tweak := range tweaks {
+		tweak(&cfg)
+	}
 
 	srv := httptest.NewServer(api.NewRouter(api.Deps{
 		Pool: pool, Redis: rdb, Config: cfg, Log: testutil.QuietLogger(), Secrets: secrets,

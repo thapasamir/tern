@@ -44,6 +44,9 @@ type Config struct {
 	// EventsPerSecond limits how many events each tenant may send per second; bursts of twice
 	// that are allowed. Zero means unlimited.
 	EventsPerSecond int
+	// AuthAttemptsPerMinute limits how often one client address may sign up or in, which makes
+	// guessing passwords slow. Zero means unlimited.
+	AuthAttemptsPerMinute int
 	// EndpointDeliveriesPerSecond limits how many deliveries per second are sent to any single
 	// endpoint, which protects the customer's server from being flooded. Zero means unlimited.
 	EndpointDeliveriesPerSecond int
@@ -74,6 +77,7 @@ const (
 
 	maxRatePerSecond                   = 100_000
 	defaultEventsPerSecond             = 100
+	defaultAuthAttemptsPerMinute       = 20
 	defaultEndpointDeliveriesPerSecond = 25
 
 	defaultRetentionDays = 30
@@ -127,6 +131,9 @@ func Load() (Config, error) {
 	if cfg.EventsPerSecond, err = envInt("RATE_LIMIT_EVENTS_PER_SECOND", defaultEventsPerSecond); err != nil {
 		return Config{}, err
 	}
+	if cfg.AuthAttemptsPerMinute, err = envInt("RATE_LIMIT_AUTH_PER_MINUTE", defaultAuthAttemptsPerMinute); err != nil {
+		return Config{}, err
+	}
 	if cfg.EndpointDeliveriesPerSecond, err = envInt("RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND", defaultEndpointDeliveriesPerSecond); err != nil {
 		return Config{}, err
 	}
@@ -178,6 +185,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: RATE_LIMIT_EVENTS_PER_SECOND must be between 0 (unlimited) and %d", maxRatePerSecond)
 	case c.RetentionDays < 0 || c.RetentionDays > maxRetentionDays:
 		return fmt.Errorf("config: RETENTION_DAYS must be between 0 (keep everything) and %d", maxRetentionDays)
+	case c.AuthAttemptsPerMinute < 0 || c.AuthAttemptsPerMinute > maxRatePerSecond:
+		return fmt.Errorf("config: RATE_LIMIT_AUTH_PER_MINUTE must be between 0 (unlimited) and %d", maxRatePerSecond)
 	case c.EndpointDeliveriesPerSecond < 0 || c.EndpointDeliveriesPerSecond > maxRatePerSecond:
 		return fmt.Errorf("config: RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND must be between 0 (unlimited) and %d", maxRatePerSecond)
 	}

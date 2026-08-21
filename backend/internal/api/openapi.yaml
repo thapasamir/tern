@@ -8,9 +8,10 @@ info:
     retries with backoff, automatic disabling of endpoints that keep failing, rate limits, replay
     and a delivery log.
 
-    **Authentication.** Calls under `/v1` are authenticated with a tenant API key sent as
-    `Authorization: Bearer tern_...`. Calls under `/admin` and `/metrics` use the operator's admin
-    token the same way.
+    **Authentication.** Calls under `/v1` are authenticated either with a tenant API key sent as
+    `Authorization: Bearer tern_...`, for your servers, or with the session token of a signed-in
+    user, `Authorization: Bearer tsess_...`, for a dashboard (see `/auth`). Both give access to the
+    same tenant. Calls under `/admin` and `/metrics` use the operator's admin token the same way.
 
     **Pagination.** List endpoints return `{"data": [...], "next_cursor": "..."}`, newest first.
     Pass `next_cursor` back as `cursor` to get the next page; it is `null` on the last page.
@@ -40,6 +41,8 @@ tags:
     description: Delivery health for dashboards.
   - name: Account
     description: Your tenant and its API keys.
+  - name: Auth
+    description: Signing up and in, for people using a dashboard rather than an API key.
   - name: Admin
     description: Operator-only calls.
   - name: Operations
@@ -47,6 +50,7 @@ tags:
 
 security:
   - ApiKey: []
+  - Session: []
 
 paths:
   /healthz:
@@ -164,6 +168,82 @@ paths:
         "400": { $ref: "#/components/responses/Invalid" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /auth/signup:
+    post:
+      tags: [Auth]
+      operationId: signup
+      summary: Create an account
+      description: |
+        Creates a tenant and its first user, and signs the user in. There is no email verification
+        yet. Limited per client address, to slow down guessing: refused calls get 429.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignupRequest" }
+      responses:
+        "201":
+          description: The new account, and a session token that is shown once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Sign in
+      description: |
+        Starts a session. A wrong password and an unknown email get the same answer. Limited per
+        client address, to slow down guessing: refused calls get 429.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: The account, and a new session token that is shown once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "400": { $ref: "#/components/responses/Invalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Sign out
+      description: Ends the session whose token made the call. Other sessions stay signed in.
+      security:
+        - Session: []
+      responses:
+        "204":
+          description: Signed out.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      operationId: getMe
+      summary: Who am I
+      security:
+        - Session: []
+      responses:
+        "200":
+          description: The signed-in user and their tenant.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/tenant:
     get:
@@ -606,6 +686,10 @@ components:
       type: http
       scheme: bearer
       description: A tenant API key, `tern_...`.
+    Session:
+      type: http
+      scheme: bearer
+      description: The session token of a signed-in user, `tsess_...`, from `/auth/signup` or `/auth/login`.
     AdminToken:
       type: http
       scheme: bearer
@@ -666,7 +750,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
-      description: The API key or admin token is missing, wrong or revoked.
+      description: The credentials are missing, wrong, revoked or expired.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -675,8 +759,13 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: It clashes with something that already exists. `error.message` says what.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     RateLimited:
-      description: The tenant is sending events too fast. Wait `Retry-After` seconds.
+      description: Too many requests from this tenant or client. Wait `Retry-After` seconds.
       headers:
         Retry-After:
           description: Seconds to wait before trying again.
@@ -725,6 +814,53 @@ components:
         id: { type: string, format: uuid }
         name: { type: string }
         created_at: { type: string, format: date-time }
+
+    SignupRequest:
+      type: object
+      required: [email, password, tenant_name]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 8, maxLength: 128, format: password }
+        tenant_name: { type: string, maxLength: 100, description: The name of the tenant the account creates. }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+
+    User:
+      type: object
+      required: [id, email, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        created_at: { type: string, format: date-time }
+
+    Account:
+      type: object
+      required: [user, tenant]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        tenant: { $ref: "#/components/schemas/Tenant" }
+
+    Session:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+          description: "Shown once. Send it as `Authorization: Bearer <token>`."
+        expires_at: { type: string, format: date-time }
+
+    LoginResult:
+      allOf:
+        - $ref: "#/components/schemas/Account"
+        - type: object
+          required: [session]
+          properties:
+            session: { $ref: "#/components/schemas/Session" }
 
     APIKey:
       type: object

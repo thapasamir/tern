@@ -26,8 +26,9 @@ func setEnv(t *testing.T, overrides map[string]string) {
 		"RETENTION_DAYS":               "",
 		"RATE_LIMIT_EVENTS_PER_SECOND": "",
 		"RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "",
-		"HTTP_ADDR": "",
-		"LOG_LEVEL": "",
+		"RATE_LIMIT_AUTH_PER_MINUTE":                "",
+		"HTTP_ADDR":                                 "",
+		"LOG_LEVEL":                                 "",
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -101,6 +102,7 @@ func TestLoad_Rejections(t *testing.T) {
 		"negative event rate":        {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "-1"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
 		"absurd event rate":          {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "99999999"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
 		"non-numeric event rate":     {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "fast"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
+		"negative auth rate":         {map[string]string{"RATE_LIMIT_AUTH_PER_MINUTE": "-1"}, "RATE_LIMIT_AUTH_PER_MINUTE"},
 		"negative delivery rate":     {map[string]string{"RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "-1"}, "RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND"},
 		"non-numeric limit":          {map[string]string{"AUTO_DISABLE_AFTER": "lots"}, "AUTO_DISABLE_AFTER"},
 		"reconcile too frequent":     {map[string]string{"RECONCILE_INTERVAL": "10ms"}, "RECONCILE_INTERVAL"},

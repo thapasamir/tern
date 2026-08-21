@@ -18,6 +18,7 @@ import (
 	"github.com/samirthapa/tern/internal/features/event"
 	"github.com/samirthapa/tern/internal/features/stats"
 	"github.com/samirthapa/tern/internal/features/tenant"
+	"github.com/samirthapa/tern/internal/features/user"
 	"github.com/samirthapa/tern/internal/shared/config"
 	"github.com/samirthapa/tern/internal/shared/httpx"
 	"github.com/samirthapa/tern/internal/shared/queue"
@@ -76,6 +77,11 @@ func NewRouter(d Deps) *chi.Mux {
 	limiter := ratelimit.NewRedis(d.Redis, "tern:ratelimit")
 	limitEvents := httpx.RateLimit(limiter, "events",
 		ratelimit.PerSecond(float64(d.Config.EventsPerSecond)), d.Log, d.RateLimitObserver)
+	// Signing up and in are reached before anyone is authenticated, so they are limited by client
+	// address instead. This is what makes guessing a password slow.
+	limitAuth := httpx.RateLimitByClient(limiter, "auth",
+		ratelimit.PerMinute(d.Config.AuthAttemptsPerMinute), d.Log, d.RateLimitObserver)
+	userMod := user.NewModule(d.Pool, limitAuth)
 	eventMod := event.NewModule(d.Pool, deliveryMod.Service(), limitEvents) // events enqueue deliveries through it
 
 	if d.MetricsHandler != nil {
@@ -85,9 +91,12 @@ func NewRouter(d Deps) *chi.Mux {
 		r.Use(tenantMod.RequireAdmin)
 		tenantMod.RegisterAdminRoutes(r)
 	})
-	// Every tenant-facing feature registers inside this group, behind API key authentication.
+	userMod.RegisterRoutes(r) // /auth: signing up and in, and the session's own routes
+	// Every tenant-facing feature registers inside this group, behind authentication: an API key,
+	// or the session token of a signed-in user. Both resolve to a tenant, so the routes inside
+	// cannot tell them apart.
 	r.Route("/v1", func(r chi.Router) {
-		r.Use(tenantMod.Authenticate)
+		r.Use(userMod.AuthenticateOr(tenantMod.Authenticate))
 		tenantMod.RegisterRoutes(r)
 		endpointMod.RegisterRoutes(r)
 		eventMod.RegisterRoutes(r)
