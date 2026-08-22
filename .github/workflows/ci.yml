@@ -32,6 +32,31 @@ jobs:
       - name: Tests
         run: go test -race -count=1 ./...
 
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: API types match the OpenAPI document
+        run: |
+          pnpm gen:api
+          git diff --exit-code -- src/shared/api/schema.d.ts
+      - name: Lint, typecheck, tests, formatting
+        run: pnpm check
+      - name: Build
+        run: pnpm build
+
   # Real Postgres and Redis in containers; the runner already has Docker.
   integration:
     runs-on: ubuntu-latest
