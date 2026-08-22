@@ -1,0 +1,125 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * Tern design tokens: "a logbook for things that travel".
+ * The rules behind them live in the README. In short: flat fog ground, hairline rules, 2px corners,
+ * no shadows, one loud colour (bill) that means "a person is needed", and status drawn as a shape
+ * (dot, cross, ring) before it is a colour.
+ */
+
+:root {
+  /* Palette. Contrast on fog: ink 15.4, graphite 6.8, wing 5.1, bill 5.5, sea 5.6, ochre 6.2. */
+  --fog: #edefea; /* page ground */
+  --paper: #f8f9f6; /* inputs, code, table body */
+  --ink: #14181b; /* text, primary action */
+  --graphite: #4a5358; /* body copy */
+  --wing: #5c666b; /* labels, hints */
+  --rule: #c9cfcb; /* hairlines, never text */
+  --bill: #b52a10; /* needs a person: failures, disabled, destructive */
+  --bill-mark: #e8451f; /* brand mark only; never text */
+  --sea: #17695c; /* succeeded */
+  --ochre: #7a4e00; /* pending, waiting */
+  /* Washes behind a status chip; each keeps its text at 4.7:1 or better. */
+  --sea-tint: #d5e6df;
+  --bill-tint: #f3d9d1;
+  --ochre-tint: #ebdfb8;
+
+  /* shadcn's semantic names, pointing at the palette. */
+  --background: var(--fog);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --popover: var(--paper);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--fog);
+  --secondary: var(--paper);
+  --secondary-foreground: var(--ink);
+  --muted: var(--paper);
+  --muted-foreground: var(--wing);
+  --accent: var(--paper);
+  --accent-foreground: var(--ink);
+  --destructive: var(--bill);
+  --border: var(--rule);
+  --input: var(--ink);
+  --ring: var(--ink);
+  --radius: 2px;
+}
+
+@theme inline {
+  --color-fog: var(--fog);
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-graphite: var(--graphite);
+  --color-wing: var(--wing);
+  --color-rule: var(--rule);
+  --color-bill: var(--bill);
+  --color-bill-mark: var(--bill-mark);
+  --color-sea: var(--sea);
+  --color-ochre: var(--ochre);
+  --color-sea-tint: var(--sea-tint);
+  --color-bill-tint: var(--bill-tint);
+  --color-ochre-tint: var(--ochre-tint);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* One corner radius everywhere. */
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: var(--radius);
+  --radius-4xl: var(--radius);
+
+  /* Flat: no theme shadows at all. */
+  --shadow-*: initial;
+
+  --font-sans: var(--font-familjen), system-ui, sans-serif;
+  --font-mono: var(--font-spline-mono), ui-monospace, monospace;
+  --font-heading: var(--font-sans);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+  }
+
+  /* Anything a machine produced is set in the mono with tabular figures, so columns line up. */
+  .data {
+    @apply font-mono tabular-nums;
+  }
+
+  /* A small caps label in the mono: table headers, field labels, section eyebrows. */
+  .eyebrow {
+    @apply font-mono text-xs tracking-[0.08em] text-wing uppercase;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 3px;
+  }
+}
