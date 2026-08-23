@@ -27,6 +27,7 @@ func setEnv(t *testing.T, overrides map[string]string) {
 		"RATE_LIMIT_EVENTS_PER_SECOND": "",
 		"RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "",
 		"RATE_LIMIT_AUTH_PER_MINUTE":                "",
+		"TRUST_PROXY_HEADERS":                       "",
 		"HTTP_ADDR":                                 "",
 		"LOG_LEVEL":                                 "",
 	}
@@ -53,6 +54,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.EventsPerSecond != 100 || cfg.EndpointDeliveriesPerSecond != 25 {
 		t.Fatalf("unexpected rate limit defaults: %+v", cfg)
+	}
+	if cfg.TrustProxyHeaders {
+		t.Fatal("proxy headers must not be trusted by default: clients could forge them")
 	}
 	if cfg.AutoDisableAfter != 20 || cfg.ReconcileInterval != 5*time.Minute {
 		t.Fatalf("unexpected reliability defaults: %+v", cfg)
@@ -102,6 +106,7 @@ func TestLoad_Rejections(t *testing.T) {
 		"negative event rate":        {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "-1"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
 		"absurd event rate":          {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "99999999"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
 		"non-numeric event rate":     {map[string]string{"RATE_LIMIT_EVENTS_PER_SECOND": "fast"}, "RATE_LIMIT_EVENTS_PER_SECOND"},
+		"bad proxy flag":             {map[string]string{"TRUST_PROXY_HEADERS": "maybe"}, "TRUST_PROXY_HEADERS"},
 		"negative auth rate":         {map[string]string{"RATE_LIMIT_AUTH_PER_MINUTE": "-1"}, "RATE_LIMIT_AUTH_PER_MINUTE"},
 		"negative delivery rate":     {map[string]string{"RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND": "-1"}, "RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND"},
 		"non-numeric limit":          {map[string]string{"AUTO_DISABLE_AFTER": "lots"}, "AUTO_DISABLE_AFTER"},
@@ -168,6 +173,14 @@ func TestLoad_DoesNotShareTheDefaultScheduleBetweenCalls(t *testing.T) {
 	second, _ := Load()
 	if second.RetrySchedule[0] != 5*time.Second {
 		t.Fatal("...must not change the defaults seen by later loads")
+	}
+}
+
+func TestLoad_TrustProxyHeadersIsOptIn(t *testing.T) {
+	setEnv(t, map[string]string{"TRUST_PROXY_HEADERS": "true"})
+	cfg, err := Load()
+	if err != nil || !cfg.TrustProxyHeaders {
+		t.Fatalf("Load = %+v, %v; want TRUST_PROXY_HEADERS=true to be honoured", cfg, err)
 	}
 }
 

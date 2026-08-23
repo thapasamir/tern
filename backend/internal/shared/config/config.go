@@ -47,6 +47,11 @@ type Config struct {
 	// AuthAttemptsPerMinute limits how often one client address may sign up or in, which makes
 	// guessing passwords slow. Zero means unlimited.
 	AuthAttemptsPerMinute int
+	// TrustProxyHeaders makes the API believe X-Real-IP and X-Forwarded-For when it works out which
+	// client address a sign-in came from. Turn it on only behind a proxy that sets those headers
+	// (the dashboard's server does): anyone who can reach the API directly could otherwise forge them
+	// and dodge the limit.
+	TrustProxyHeaders bool
 	// EndpointDeliveriesPerSecond limits how many deliveries per second are sent to any single
 	// endpoint, which protects the customer's server from being flooded. Zero means unlimited.
 	EndpointDeliveriesPerSecond int
@@ -132,6 +137,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.AuthAttemptsPerMinute, err = envInt("RATE_LIMIT_AUTH_PER_MINUTE", defaultAuthAttemptsPerMinute); err != nil {
+		return Config{}, err
+	}
+	if cfg.TrustProxyHeaders, err = envBool("TRUST_PROXY_HEADERS", false); err != nil {
 		return Config{}, err
 	}
 	if cfg.EndpointDeliveriesPerSecond, err = envInt("RATE_LIMIT_ENDPOINT_DELIVERIES_PER_SECOND", defaultEndpointDeliveriesPerSecond); err != nil {

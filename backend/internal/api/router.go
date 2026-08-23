@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -81,6 +82,11 @@ func NewRouter(d Deps) *chi.Mux {
 	// address instead. This is what makes guessing a password slow.
 	limitAuth := httpx.RateLimitByClient(limiter, "auth",
 		ratelimit.PerMinute(d.Config.AuthAttemptsPerMinute), d.Log, d.RateLimitObserver)
+	if d.Config.TrustProxyHeaders {
+		// The dashboard's server makes these calls for its users: without this, every one of them
+		// would share its address, and so share one bucket.
+		limitAuth = chain(middleware.RealIP, limitAuth)
+	}
 	userMod := user.NewModule(d.Pool, limitAuth)
 	eventMod := event.NewModule(d.Pool, deliveryMod.Service(), limitEvents) // events enqueue deliveries through it
 
@@ -104,6 +110,11 @@ func NewRouter(d Deps) *chi.Mux {
 		statsMod.RegisterRoutes(r)
 	})
 	return r
+}
+
+// chain returns a middleware that runs first, then second.
+func chain(first, second func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler { return first(second(next)) }
 }
 
 func serveOpenAPI(w http.ResponseWriter, _ *http.Request) {

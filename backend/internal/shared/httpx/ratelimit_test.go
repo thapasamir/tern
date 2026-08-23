@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
 	"github.com/samirthapa/tern/internal/shared/ratelimit"
@@ -175,6 +176,25 @@ func TestRateLimitByClient_CountsAgainstTheRemoteAddressWithoutItsPort(t *testin
 	want := []string{"auth:203.0.113.9", "auth:203.0.113.9", "auth:198.51.100.2"}
 	if strings.Join(l.keys, ",") != strings.Join(want, ",") {
 		t.Fatalf("buckets = %v, want %v (one per address, not per connection)", l.keys, want)
+	}
+}
+
+func TestRateLimitByClient_CountsAgainstTheForwardedAddressBehindRealIP(t *testing.T) {
+	l := &fakeLimiter{decision: ratelimit.Decision{Allowed: true, Remaining: 4}}
+	mw := RateLimitByClient(l, "auth", testLimit, testutil.QuietLogger(), nil)
+	h := middleware.RealIP(mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
+
+	// Both requests arrive from the dashboard's server, on behalf of two different people.
+	for _, forwarded := range []string{"203.0.113.9", "198.51.100.2"} {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+		req.RemoteAddr = "10.0.0.5:44000"
+		req.Header.Set("X-Real-IP", forwarded)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	want := []string{"auth:203.0.113.9", "auth:198.51.100.2"}
+	if strings.Join(l.keys, ",") != strings.Join(want, ",") {
+		t.Fatalf("buckets = %v, want %v (one per forwarded client)", l.keys, want)
 	}
 }
 
