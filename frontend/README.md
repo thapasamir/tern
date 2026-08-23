@@ -45,6 +45,13 @@ src/
 - Client components are small islands for what has to be interactive or live. TanStack Query is added to a screen only if it proves it needs it.
 - This Next.js has Cache Components on: anything that reads request data (cookies, uncached fetches) must sit inside a `<Suspense>` boundary, or the build says so. Keep layouts static and put the dynamic part in its own boundary.
 
+## Signing in
+
+- The backend gives a session token at sign-in. It is stored in an httpOnly cookie (`shared/session`), so scripts in the page can never read it; only the server attaches it to API calls.
+- `proxy.ts` is a cheap first check: no cookie, no dashboard. It cannot tell whether the session is still valid, so `RequireAccount` in the dashboard layout asks the API, and every feature's `api.ts` starts from `authedApi()`, which refuses a missing session too. A session the API rejects (expired, signed out elsewhere) sends the visitor back to `/login`.
+- `?next=` brings a visitor back to the page they wanted. Only local paths are honoured (`safeRedirectPath`).
+- The API limits sign-in attempts per client address. The dashboard's server forwards the visitor's address in `X-Real-IP`, and the API must run with `TRUST_PROXY_HEADERS=true` to use it. Leave that off if the API is reachable by anyone but the dashboard.
+
 ## Design
 
 "A logbook for things that travel." The tokens are in `src/app/globals.css`; they follow shadcn's variable names, so shadcn components pick them up.

@@ -12,13 +12,17 @@ type Result<T> = { data?: T; error?: unknown; response: Response };
  * A typed client for the Tern API. Paths, parameters and responses all come from the OpenAPI
  * document, so a change to the API shows up here as a compile error.
  *
- * Pass the session token to call as a signed-in user. Responses are never cached by the client:
+ * Pass the session token to call as a signed-in user, and the visitor's address (see
+ * forwardedClientIp) for calls made on behalf of someone not signed in yet. Responses are never cached by the client:
  * pages decide what to cache.
  */
-export function createApiClient(options: { token?: string } = {}) {
+export function createApiClient(options: { token?: string; clientIp?: string } = {}) {
+  const headers: Record<string, string> = {};
+  if (options.token) headers.Authorization = `Bearer ${options.token}`;
+  if (options.clientIp) headers["X-Real-IP"] = options.clientIp;
   return createClient<paths>({
     baseUrl: env.API_URL,
-    headers: options.token ? { Authorization: `Bearer ${options.token}` } : undefined,
+    headers,
     cache: "no-store",
   });
 }

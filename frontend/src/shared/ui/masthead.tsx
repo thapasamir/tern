@@ -17,7 +17,7 @@ export function Masthead({ items, trailing }: { items: NavItem[]; trailing?: Rea
           <span className="text-2xl font-semibold tracking-tight">tern</span>
         </Link>
         <MastheadNav items={items} />
-        {trailing ? <div className="py-2.5 text-[13px] text-graphite">{trailing}</div> : null}
+        {trailing ? <div className="ml-auto py-2.5 text-[13px] text-graphite">{trailing}</div> : null}
       </div>
     </header>
   );
