@@ -1,7 +1,8 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, Suspense } from "react";
 
-import { MastheadNav, type NavItem } from "./masthead-nav";
+import { MastheadNav } from "./masthead-nav";
+import { type NavItem, NavTabs } from "./nav-tabs";
 import { TernMark } from "./tern-mark";
 
 /**
@@ -16,7 +17,10 @@ export function Masthead({ items, trailing }: { items: NavItem[]; trailing?: Rea
           <TernMark />
           <span className="text-2xl font-semibold tracking-tight">tern</span>
         </Link>
-        <MastheadNav items={items} />
+        {/* The current page is only known once the request is, so the tabs first appear unmarked. */}
+        <Suspense fallback={<NavTabs items={items} />}>
+          <MastheadNav items={items} />
+        </Suspense>
         {trailing ? <div className="ml-auto py-2.5 text-[13px] text-graphite">{trailing}</div> : null}
       </div>
     </header>

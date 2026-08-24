@@ -17,9 +17,9 @@ describe("Button", () => {
   it("can give its look to a link", () => {
     render(
       <Button asChild>
-        <a href="/endpoints">Endpoints</a>
+        <a href="/somewhere">Endpoints</a>
       </Button>,
     );
-    expect(screen.getByRole("link", { name: "Endpoints" })).toHaveAttribute("href", "/endpoints");
+    expect(screen.getByRole("link", { name: "Endpoints" })).toHaveAttribute("href", "/somewhere");
   });
 });
