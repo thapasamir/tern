@@ -1,14 +1,15 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { z, type ZodType } from "zod";
+import type { ZodType } from "zod";
 
 import { ApiError } from "@/shared/api/errors";
+import type { FormState } from "@/shared/forms/form-state";
+import { parseForm } from "@/shared/forms/parse-form";
 import { safeRedirectPath } from "@/shared/lib/safe-redirect";
 import { clearSession, readSessionToken, writeSession } from "@/shared/session/session";
 
 import { login, logout, signup, type LoginResult } from "./api";
-import type { FormState } from "./form-state";
 import { describeAuthError } from "./messages";
 import { loginSchema, signupSchema } from "./schemas";
 
@@ -44,18 +45,13 @@ async function authenticate<Input>(
   attempt: "login" | "signup",
   keep: string[],
 ): Promise<FormState> {
-  const raw = Object.fromEntries(formData) as Record<string, string>;
-  const values = Object.fromEntries(keep.map((name) => [name, raw[name] ?? ""]));
-
-  const parsed = schema.safeParse(raw);
-  if (!parsed.success) {
-    const fieldErrors = firstErrorPerField(parsed.error);
-    return { fieldErrors, values };
-  }
+  const form = parseForm(schema, formData, keep);
+  if (!form.ok) return form.state;
+  const values = Object.fromEntries(keep.map((name) => [name, formData.get(name)?.toString() ?? ""]));
 
   let result: LoginResult;
   try {
-    result = await call(parsed.data);
+    result = await call(form.data);
   } catch (error) {
     if (error instanceof ApiError) return { error: describeAuthError(error, attempt), values };
     throw error;
@@ -63,13 +59,4 @@ async function authenticate<Input>(
 
   await writeSession(result.session);
   redirect(safeRedirectPath(formData.get("next")?.toString()));
-}
-
-/** One message per field, the first: showing every rule a field broke at once is just noise. */
-function firstErrorPerField(error: z.ZodError): Record<string, string> {
-  const messages: Record<string, string> = {};
-  for (const issue of error.issues) {
-    messages[String(issue.path[0])] ??= issue.message;
-  }
-  return messages;
 }

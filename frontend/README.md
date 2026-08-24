@@ -48,7 +48,7 @@ src/
 ## Signing in
 
 - The backend gives a session token at sign-in. It is stored in an httpOnly cookie (`shared/session`), so scripts in the page can never read it; only the server attaches it to API calls.
-- `proxy.ts` is a cheap first check: no cookie, no dashboard. It cannot tell whether the session is still valid, so `RequireAccount` in the dashboard layout asks the API, and every feature's `api.ts` starts from `authedApi()`, which refuses a missing session too. A session the API rejects (expired, signed out elsewhere) sends the visitor back to `/login`.
+- `proxy.ts` is a cheap first check: no cookie, no dashboard. It cannot tell whether the session is still valid, so `RequireAccount` in the dashboard layout asks the API, and every feature's `api.ts` calls through `callApi()`, which refuses a missing or rejected session too. A session the API rejects (expired, signed out elsewhere) sends the visitor back to `/login`.
 - `?next=` brings a visitor back to the page they wanted. Only local paths are honoured (`safeRedirectPath`).
 - The API limits sign-in attempts per client address. The dashboard's server forwards the visitor's address in `X-Real-IP`, and the API must run with `TRUST_PROXY_HEADERS=true` to use it. Leave that off if the API is reachable by anyone but the dashboard.
 

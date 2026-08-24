@@ -6,7 +6,9 @@ import { env } from "@/shared/config/env";
 import { toApiError } from "./errors";
 import type { paths } from "./schema";
 
-type Result<T> = { data?: T; error?: unknown; response: Response };
+export type ApiResult<T> = { data?: T; error?: unknown; response: Response };
+
+export type ApiClient = ReturnType<typeof createApiClient>;
 
 /**
  * A typed client for the Tern API. Paths, parameters and responses all come from the OpenAPI
@@ -32,7 +34,7 @@ export function createApiClient(options: { token?: string; clientIp?: string } =
  *
  *   const endpoints = await unwrap(api.GET("/v1/endpoints"));
  */
-export async function unwrap<T>(call: Promise<Result<T>>): Promise<T> {
+export async function unwrap<T>(call: Promise<ApiResult<T>>): Promise<T> {
   const { data, error, response } = await call;
   if (error !== undefined || data === undefined) {
     // A 204 has no body, hence no data and no error: that is success with nothing to return.
