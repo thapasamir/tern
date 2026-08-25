@@ -1030,9 +1030,37 @@ components:
         duration_ms: { type: integer }
         started_at: { type: string, format: date-time }
 
-    DeliveryDetail:
+    LastAttempt:
+      type: object
+      description: How the latest attempt of a delivery went, without the response body (see `GET /v1/deliveries/{deliveryID}` for that).
+      required: [status_code, error, duration_ms, started_at]
+      properties:
+        status_code:
+          type: integer
+          nullable: true
+          description: The HTTP status the endpoint answered with, or null if there was no response.
+        error: { type: string, nullable: true, description: Why the attempt failed. }
+        duration_ms: { type: integer }
+        started_at: { type: string, format: date-time }
+
+    DeliveryView:
+      description: A delivery as the log shows it, with what is needed to recognise it.
       allOf:
         - $ref: "#/components/schemas/Delivery"
+        - type: object
+          required: [event_type, endpoint_url, last_attempt]
+          properties:
+            event_type: { $ref: "#/components/schemas/EventType" }
+            endpoint_url: { type: string, description: The URL of the endpoint the delivery goes to. }
+            last_attempt:
+              nullable: true
+              description: The latest attempt, or null while no attempt has finished.
+              allOf:
+                - $ref: "#/components/schemas/LastAttempt"
+
+    DeliveryDetail:
+      allOf:
+        - $ref: "#/components/schemas/DeliveryView"
         - type: object
           required: [attempts]
           properties:
@@ -1046,7 +1074,7 @@ components:
       properties:
         data:
           type: array
-          items: { $ref: "#/components/schemas/Delivery" }
+          items: { $ref: "#/components/schemas/DeliveryView" }
         next_cursor: { type: string, format: uuid, nullable: true }
 
     ReplayRequest:

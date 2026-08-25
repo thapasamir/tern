@@ -181,6 +181,12 @@ func TestDeliveryLogFiltersAndStats(t *testing.T) {
 	if len(data) != 1 || data[0].(map[string]any)["endpoint_id"] != badEP {
 		t.Fatalf("status=failed returned %v, want only the delivery to %s", data, badEP)
 	}
+	// A log row says what was sent, where, and how the latest attempt went, with no second call.
+	row := data[0].(map[string]any)
+	last, _ := row["last_attempt"].(map[string]any)
+	if row["event_type"] != "mixed.results" || row["endpoint_url"] == "" || last["status_code"] != float64(502) {
+		t.Fatalf("log row = %v, want event type, endpoint url and a last attempt answered with 502", row)
+	}
 	onlyGood := s.call(http.MethodGet, "/v1/deliveries?endpoint_id="+goodEP, key, nil)
 	if data, _ := onlyGood.get("data").([]any); len(data) != 1 || data[0].(map[string]any)["status"] != "succeeded" {
 		t.Fatalf("endpoint_id filter returned %v", data)

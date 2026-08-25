@@ -74,9 +74,23 @@ LIMIT sqlc.arg(row_limit);
 INSERT INTO delivery_attempts (id, delivery_id, attempt_number, status_code, error, response_body, duration_ms, started_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
+-- A delivery as the API shows it: with the type of its event, the URL of its endpoint, and a
+-- summary of its latest attempt (all NULL until the first attempt has finished).
 -- name: GetDelivery :one
-SELECT * FROM deliveries
-WHERE id = $1 AND tenant_id = $2;
+SELECT sqlc.embed(d),
+       e.type  AS event_type,
+       ep.url  AS endpoint_url,
+       la.status_code AS last_status_code,
+       la.error       AS last_error,
+       la.duration_ms AS last_duration_ms,
+       la.started_at  AS last_started_at
+FROM deliveries d
+JOIN events e     ON e.id  = d.event_id
+JOIN endpoints ep ON ep.id = d.endpoint_id
+-- The latest attempt is the one numbered attempt_count (every attempt bumps it), found by the
+-- unique (delivery_id, attempt_number) index.
+LEFT JOIN delivery_attempts la ON la.delivery_id = d.id AND la.attempt_number = d.attempt_count
+WHERE d.id = $1 AND d.tenant_id = $2;
 
 -- name: ListAttempts :many
 SELECT * FROM delivery_attempts
@@ -87,15 +101,27 @@ ORDER BY attempt_number;
 -- delivery's creation time, in [since, until). Keyset pagination: newest first, continuing after
 -- the last ID of the previous page.
 -- name: ListDeliveries :many
-SELECT * FROM deliveries
-WHERE tenant_id = sqlc.arg(tenant_id)
-  AND id < sqlc.arg(after)
-  AND (sqlc.narg(endpoint_id)::uuid IS NULL OR endpoint_id = sqlc.narg(endpoint_id))
-  AND (sqlc.narg(event_id)::uuid IS NULL OR event_id = sqlc.narg(event_id))
-  AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status))
-  AND (sqlc.narg(since)::timestamptz IS NULL OR created_at >= sqlc.narg(since))
-  AND (sqlc.narg(until)::timestamptz IS NULL OR created_at < sqlc.narg(until))
-ORDER BY id DESC
+SELECT sqlc.embed(d),
+       e.type  AS event_type,
+       ep.url  AS endpoint_url,
+       la.status_code AS last_status_code,
+       la.error       AS last_error,
+       la.duration_ms AS last_duration_ms,
+       la.started_at  AS last_started_at
+FROM deliveries d
+JOIN events e     ON e.id  = d.event_id
+JOIN endpoints ep ON ep.id = d.endpoint_id
+-- The latest attempt is the one numbered attempt_count (every attempt bumps it), found by the
+-- unique (delivery_id, attempt_number) index.
+LEFT JOIN delivery_attempts la ON la.delivery_id = d.id AND la.attempt_number = d.attempt_count
+WHERE d.tenant_id = sqlc.arg(tenant_id)
+  AND d.id < sqlc.arg(after)
+  AND (sqlc.narg(endpoint_id)::uuid IS NULL OR d.endpoint_id = sqlc.narg(endpoint_id))
+  AND (sqlc.narg(event_id)::uuid IS NULL OR d.event_id = sqlc.narg(event_id))
+  AND (sqlc.narg(status)::text IS NULL OR d.status = sqlc.narg(status))
+  AND (sqlc.narg(since)::timestamptz IS NULL OR d.created_at >= sqlc.narg(since))
+  AND (sqlc.narg(until)::timestamptz IS NULL OR d.created_at < sqlc.narg(until))
+ORDER BY d.id DESC
 LIMIT sqlc.arg(row_limit);
 
 -- Outbox sweeper: pending deliveries whose Redis enqueue never happened.

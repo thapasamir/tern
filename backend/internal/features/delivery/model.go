@@ -37,6 +37,25 @@ type Delivery struct {
 	CompletedAt  *time.Time
 }
 
+// View is a delivery as the API shows it: with the type of its event, the URL of its endpoint and
+// a summary of its latest attempt, so a log can be read without opening every delivery.
+type View struct {
+	Delivery
+	EventType   string
+	EndpointURL string
+	// LastAttempt is nil until the first attempt has finished.
+	LastAttempt *AttemptSummary
+}
+
+// AttemptSummary is the outcome of an attempt, without the response body.
+type AttemptSummary struct {
+	// StatusCode is nil when no HTTP response was received.
+	StatusCode *int
+	Error      *string
+	Duration   time.Duration
+	StartedAt  time.Time
+}
+
 // Attempt is the record of one HTTP request made for a delivery.
 type Attempt struct {
 	ID         uuid.UUID

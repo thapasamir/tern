@@ -35,10 +35,10 @@ type Repository interface {
 	FailPendingForEndpoint(ctx context.Context, endpointID uuid.UUID, reason string, at time.Time) (int64, error)
 
 	// The remaining methods back the API and are tenant-scoped.
-	Get(ctx context.Context, tenantID, id uuid.UUID) (Delivery, error)
+	Get(ctx context.Context, tenantID, id uuid.UUID) (View, error)
 	ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Attempt, error)
 	// List returns the tenant's deliveries that match the filter, newest first.
-	List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) ([]Delivery, error)
+	List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) ([]View, error)
 
 	// ListUnenqueued and MarkEnqueued implement the outbox sweeper.
 	ListUnenqueued(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error)
@@ -254,12 +254,12 @@ func replayRow(d Delivery) deliverydb.InsertReplaysParams {
 	}
 }
 
-func (r *pgRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (Delivery, error) {
+func (r *pgRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (View, error) {
 	row, err := r.q.GetDelivery(ctx, deliverydb.GetDeliveryParams{ID: id, TenantID: tenantID})
 	if err != nil {
-		return Delivery{}, database.WrapErr(err, "get delivery")
+		return View{}, database.WrapErr(err, "get delivery")
 	}
-	return toDelivery(row), nil
+	return toView(row.Delivery, row.EventType, row.EndpointURL, row.LastStatusCode, row.LastError, row.LastDurationMs, row.LastStartedAt), nil
 }
 
 func (r *pgRepository) ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Attempt, error) {
@@ -274,7 +274,7 @@ func (r *pgRepository) ListAttempts(ctx context.Context, deliveryID uuid.UUID) (
 	return out, nil
 }
 
-func (r *pgRepository) List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) ([]Delivery, error) {
+func (r *pgRepository) List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) ([]View, error) {
 	var status *string
 	if f.Status != nil {
 		s := string(*f.Status)
@@ -293,9 +293,9 @@ func (r *pgRepository) List(ctx context.Context, tenantID uuid.UUID, f ListFilte
 	if err != nil {
 		return nil, fmt.Errorf("list deliveries: %w", err)
 	}
-	out := make([]Delivery, 0, len(rows))
+	out := make([]View, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, toDelivery(row))
+		out = append(out, toView(row.Delivery, row.EventType, row.EndpointURL, row.LastStatusCode, row.LastError, row.LastDurationMs, row.LastStartedAt))
 	}
 	return out, nil
 }
@@ -333,6 +333,24 @@ func toDelivery(row deliverydb.Delivery) Delivery {
 		UpdatedAt:     row.UpdatedAt,
 		CompletedAt:   row.CompletedAt,
 	}
+}
+
+// toView builds a View from a joined row. The last_* columns are all NULL when no attempt has
+// finished yet, and all set otherwise; startedAt tells which.
+func toView(d deliverydb.Delivery, eventType, endpointURL string, statusCode *int32, errText *string, durationMs *int32, startedAt *time.Time) View {
+	v := View{Delivery: toDelivery(d), EventType: eventType, EndpointURL: endpointURL}
+	if startedAt != nil {
+		last := &AttemptSummary{Error: errText, StartedAt: *startedAt}
+		if statusCode != nil {
+			code := int(*statusCode)
+			last.StatusCode = &code
+		}
+		if durationMs != nil {
+			last.Duration = time.Duration(*durationMs) * time.Millisecond
+		}
+		v.LastAttempt = last
+	}
+	return v
 }
 
 func toAttempt(row deliverydb.DeliveryAttempt) Attempt {

@@ -185,34 +185,34 @@ func (s *Service) enqueueAfterCommit(ctx context.Context, deliveryIDs ...uuid.UU
 }
 
 // GetWithAttempts returns a delivery and the record of every attempt made for it.
-func (s *Service) GetWithAttempts(ctx context.Context, tenantID, id uuid.UUID) (Delivery, []Attempt, error) {
+func (s *Service) GetWithAttempts(ctx context.Context, tenantID, id uuid.UUID) (View, []Attempt, error) {
 	d, err := s.repo.Get(ctx, tenantID, id)
 	if err != nil {
-		return Delivery{}, nil, mapRepoError(err)
+		return View{}, nil, mapRepoError(err)
 	}
 	attempts, err := s.repo.ListAttempts(ctx, d.ID)
 	if err != nil {
-		return Delivery{}, nil, apperror.Internal(err)
+		return View{}, nil, apperror.Internal(err)
 	}
 	return d, attempts, nil
 }
 
 // List returns the delivery log: the tenant's deliveries matching the filter, newest first.
-func (s *Service) List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) (pagination.Result[Delivery], error) {
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, f ListFilter, p pagination.Params) (pagination.Result[View], error) {
 	if f.Status != nil {
 		if _, ok := ParseStatus(string(*f.Status)); !ok {
-			return pagination.Result[Delivery]{}, apperror.Invalid("status must be one of: pending, succeeded, failed")
+			return pagination.Result[View]{}, apperror.Invalid("status must be one of: pending, succeeded, failed")
 		}
 	}
 	if f.Since != nil && f.Until != nil && !f.Since.Before(*f.Until) {
-		return pagination.Result[Delivery]{}, apperror.Invalid("since must be before until")
+		return pagination.Result[View]{}, apperror.Invalid("since must be before until")
 	}
 
 	rows, err := s.repo.List(ctx, tenantID, f, p)
 	if err != nil {
-		return pagination.Result[Delivery]{}, apperror.Internal(err)
+		return pagination.Result[View]{}, apperror.Internal(err)
 	}
-	return pagination.NewResult(rows, p, func(d Delivery) uuid.UUID { return d.ID }), nil
+	return pagination.NewResult(rows, p, func(d View) uuid.UUID { return d.ID }), nil
 }
 
 func mapRepoError(err error) error { return apperror.FromStore(err, "delivery not found") }

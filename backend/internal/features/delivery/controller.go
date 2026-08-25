@@ -47,7 +47,7 @@ func (c *Controller) respondWithList(w http.ResponseWriter, r *http.Request, fil
 	if err != nil {
 		return err
 	}
-	httpx.JSON(w, http.StatusOK, pagination.ToPage(res, toResponse))
+	httpx.JSON(w, http.StatusOK, pagination.ToPage(res, toViewResponse))
 	return nil
 }
 

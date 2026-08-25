@@ -128,8 +128,18 @@ func (q *Queries) FailPendingForEndpoint(ctx context.Context, arg FailPendingFor
 }
 
 const getDelivery = `-- name: GetDelivery :one
-SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at, replayed_from FROM deliveries
-WHERE id = $1 AND tenant_id = $2
+SELECT d.id, d.tenant_id, d.event_id, d.endpoint_id, d.status, d.attempt_count, d.enqueued_at, d.created_at, d.updated_at, d.completed_at, d.next_attempt_at, d.replayed_from,
+       e.type  AS event_type,
+       ep.url  AS endpoint_url,
+       la.status_code AS last_status_code,
+       la.error       AS last_error,
+       la.duration_ms AS last_duration_ms,
+       la.started_at  AS last_started_at
+FROM deliveries d
+JOIN events e     ON e.id  = d.event_id
+JOIN endpoints ep ON ep.id = d.endpoint_id
+LEFT JOIN delivery_attempts la ON la.delivery_id = d.id AND la.attempt_number = d.attempt_count
+WHERE d.id = $1 AND d.tenant_id = $2
 `
 
 type GetDeliveryParams struct {
@@ -137,22 +147,42 @@ type GetDeliveryParams struct {
 	TenantID uuid.UUID
 }
 
-func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (Delivery, error) {
+type GetDeliveryRow struct {
+	Delivery       Delivery
+	EventType      string
+	EndpointURL    string
+	LastStatusCode *int32
+	LastError      *string
+	LastDurationMs *int32
+	LastStartedAt  *time.Time
+}
+
+// A delivery as the API shows it: with the type of its event, the URL of its endpoint, and a
+// summary of its latest attempt (all NULL until the first attempt has finished).
+// The latest attempt is the one numbered attempt_count (every attempt bumps it), found by the
+// unique (delivery_id, attempt_number) index.
+func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDeliveryRow, error) {
 	row := q.db.QueryRow(ctx, getDelivery, arg.ID, arg.TenantID)
-	var i Delivery
+	var i GetDeliveryRow
 	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.EventID,
-		&i.EndpointID,
-		&i.Status,
-		&i.AttemptCount,
-		&i.EnqueuedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.CompletedAt,
-		&i.NextAttemptAt,
-		&i.ReplayedFrom,
+		&i.Delivery.ID,
+		&i.Delivery.TenantID,
+		&i.Delivery.EventID,
+		&i.Delivery.EndpointID,
+		&i.Delivery.Status,
+		&i.Delivery.AttemptCount,
+		&i.Delivery.EnqueuedAt,
+		&i.Delivery.CreatedAt,
+		&i.Delivery.UpdatedAt,
+		&i.Delivery.CompletedAt,
+		&i.Delivery.NextAttemptAt,
+		&i.Delivery.ReplayedFrom,
+		&i.EventType,
+		&i.EndpointURL,
+		&i.LastStatusCode,
+		&i.LastError,
+		&i.LastDurationMs,
+		&i.LastStartedAt,
 	)
 	return i, err
 }
@@ -351,15 +381,25 @@ func (q *Queries) ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Del
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
-SELECT id, tenant_id, event_id, endpoint_id, status, attempt_count, enqueued_at, created_at, updated_at, completed_at, next_attempt_at, replayed_from FROM deliveries
-WHERE tenant_id = $1
-  AND id < $2
-  AND ($3::uuid IS NULL OR endpoint_id = $3)
-  AND ($4::uuid IS NULL OR event_id = $4)
-  AND ($5::text IS NULL OR status = $5)
-  AND ($6::timestamptz IS NULL OR created_at >= $6)
-  AND ($7::timestamptz IS NULL OR created_at < $7)
-ORDER BY id DESC
+SELECT d.id, d.tenant_id, d.event_id, d.endpoint_id, d.status, d.attempt_count, d.enqueued_at, d.created_at, d.updated_at, d.completed_at, d.next_attempt_at, d.replayed_from,
+       e.type  AS event_type,
+       ep.url  AS endpoint_url,
+       la.status_code AS last_status_code,
+       la.error       AS last_error,
+       la.duration_ms AS last_duration_ms,
+       la.started_at  AS last_started_at
+FROM deliveries d
+JOIN events e     ON e.id  = d.event_id
+JOIN endpoints ep ON ep.id = d.endpoint_id
+LEFT JOIN delivery_attempts la ON la.delivery_id = d.id AND la.attempt_number = d.attempt_count
+WHERE d.tenant_id = $1
+  AND d.id < $2
+  AND ($3::uuid IS NULL OR d.endpoint_id = $3)
+  AND ($4::uuid IS NULL OR d.event_id = $4)
+  AND ($5::text IS NULL OR d.status = $5)
+  AND ($6::timestamptz IS NULL OR d.created_at >= $6)
+  AND ($7::timestamptz IS NULL OR d.created_at < $7)
+ORDER BY d.id DESC
 LIMIT $8
 `
 
@@ -374,10 +414,22 @@ type ListDeliveriesParams struct {
 	RowLimit   int32
 }
 
+type ListDeliveriesRow struct {
+	Delivery       Delivery
+	EventType      string
+	EndpointURL    string
+	LastStatusCode *int32
+	LastError      *string
+	LastDurationMs *int32
+	LastStartedAt  *time.Time
+}
+
 // The delivery log. Every filter is optional (a NULL argument means "no filter"); created_at is the
 // delivery's creation time, in [since, until). Keyset pagination: newest first, continuing after
 // the last ID of the previous page.
-func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) ([]Delivery, error) {
+// The latest attempt is the one numbered attempt_count (every attempt bumps it), found by the
+// unique (delivery_id, attempt_number) index.
+func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) ([]ListDeliveriesRow, error) {
 	rows, err := q.db.Query(ctx, listDeliveries,
 		arg.TenantID,
 		arg.After,
@@ -392,22 +444,28 @@ func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) 
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Delivery{}
+	items := []ListDeliveriesRow{}
 	for rows.Next() {
-		var i Delivery
+		var i ListDeliveriesRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.EventID,
-			&i.EndpointID,
-			&i.Status,
-			&i.AttemptCount,
-			&i.EnqueuedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.CompletedAt,
-			&i.NextAttemptAt,
-			&i.ReplayedFrom,
+			&i.Delivery.ID,
+			&i.Delivery.TenantID,
+			&i.Delivery.EventID,
+			&i.Delivery.EndpointID,
+			&i.Delivery.Status,
+			&i.Delivery.AttemptCount,
+			&i.Delivery.EnqueuedAt,
+			&i.Delivery.CreatedAt,
+			&i.Delivery.UpdatedAt,
+			&i.Delivery.CompletedAt,
+			&i.Delivery.NextAttemptAt,
+			&i.Delivery.ReplayedFrom,
+			&i.EventType,
+			&i.EndpointURL,
+			&i.LastStatusCode,
+			&i.LastError,
+			&i.LastDurationMs,
+			&i.LastStartedAt,
 		); err != nil {
 			return nil, err
 		}

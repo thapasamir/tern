@@ -97,12 +97,12 @@ func (f *fakeRepo) ReplayFailed(_ context.Context, tenantID, endpointID uuid.UUI
 	return f.replayBatch, f.replayFailedErr
 }
 
-func (f *fakeRepo) Get(_ context.Context, tenantID, id uuid.UUID) (Delivery, error) {
+func (f *fakeRepo) Get(_ context.Context, tenantID, id uuid.UUID) (View, error) {
 	d, ok := f.deliveries[id]
 	if !ok || d.TenantID != tenantID {
-		return Delivery{}, ErrNotFound
+		return View{}, ErrNotFound
 	}
-	return d, nil
+	return View{Delivery: d}, nil
 }
 
 func (f *fakeRepo) ListAttempts(_ context.Context, deliveryID uuid.UUID) ([]Attempt, error) {
@@ -112,13 +112,13 @@ func (f *fakeRepo) ListAttempts(_ context.Context, deliveryID uuid.UUID) ([]Atte
 // List records the filter it was given and returns the tenant's deliveries of the filtered event.
 // The real filtering is SQL, covered by the end-to-end tests; here only the service's behaviour
 // around it is under test.
-func (f *fakeRepo) List(_ context.Context, tenantID uuid.UUID, filter ListFilter, _ pagination.Params) ([]Delivery, error) {
+func (f *fakeRepo) List(_ context.Context, tenantID uuid.UUID, filter ListFilter, _ pagination.Params) ([]View, error) {
 	f.listFilter = filter
 	f.listCalled = true
-	var out []Delivery
+	var out []View
 	for _, d := range f.deliveries {
 		if d.TenantID == tenantID && (filter.EventID == nil || d.EventID == *filter.EventID) {
-			out = append(out, d)
+			out = append(out, View{Delivery: d})
 		}
 	}
 	return out, f.listErr

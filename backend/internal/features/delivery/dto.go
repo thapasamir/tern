@@ -20,6 +20,23 @@ type deliveryResponse struct {
 	CompletedAt   *time.Time `json:"completed_at"`
 }
 
+// deliveryViewResponse is a delivery in the log and on its own page: the delivery, plus what is
+// needed to recognise it (event type, endpoint URL) and how its latest attempt went.
+type deliveryViewResponse struct {
+	deliveryResponse
+	EventType   string `json:"event_type"`
+	EndpointURL string `json:"endpoint_url"`
+	// LastAttempt is null until the first attempt has finished.
+	LastAttempt *lastAttemptResponse `json:"last_attempt"`
+}
+
+type lastAttemptResponse struct {
+	StatusCode *int      `json:"status_code"`
+	Error      *string   `json:"error"`
+	DurationMs int64     `json:"duration_ms"`
+	StartedAt  time.Time `json:"started_at"`
+}
+
 type attemptResponse struct {
 	AttemptNumber int       `json:"attempt_number"`
 	StatusCode    *int      `json:"status_code"`
@@ -30,7 +47,7 @@ type attemptResponse struct {
 }
 
 type deliveryDetailResponse struct {
-	deliveryResponse
+	deliveryViewResponse
 	Attempts []attemptResponse `json:"attempts"`
 }
 
@@ -64,7 +81,20 @@ func toResponse(d Delivery) deliveryResponse {
 	}
 }
 
-func toDetailResponse(d Delivery, attempts []Attempt) deliveryDetailResponse {
+func toViewResponse(v View) deliveryViewResponse {
+	out := deliveryViewResponse{deliveryResponse: toResponse(v.Delivery), EventType: v.EventType, EndpointURL: v.EndpointURL}
+	if v.LastAttempt != nil {
+		out.LastAttempt = &lastAttemptResponse{
+			StatusCode: v.LastAttempt.StatusCode,
+			Error:      v.LastAttempt.Error,
+			DurationMs: v.LastAttempt.Duration.Milliseconds(),
+			StartedAt:  v.LastAttempt.StartedAt.UTC(),
+		}
+	}
+	return out
+}
+
+func toDetailResponse(d View, attempts []Attempt) deliveryDetailResponse {
 	out := make([]attemptResponse, 0, len(attempts)) // JSON [] rather than null
 	for _, a := range attempts {
 		out = append(out, attemptResponse{
@@ -76,5 +106,5 @@ func toDetailResponse(d Delivery, attempts []Attempt) deliveryDetailResponse {
 			StartedAt:     a.StartedAt.UTC(),
 		})
 	}
-	return deliveryDetailResponse{deliveryResponse: toResponse(d), Attempts: out}
+	return deliveryDetailResponse{deliveryViewResponse: toViewResponse(d), Attempts: out}
 }
