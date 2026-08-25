@@ -727,11 +727,29 @@ export interface components {
             /** Format: date-time */
             started_at: string;
         };
-        DeliveryDetail: components["schemas"]["Delivery"] & {
+        /** @description How the latest attempt of a delivery went, without the response body (see `GET /v1/deliveries/{deliveryID}` for that). */
+        LastAttempt: {
+            /** @description The HTTP status the endpoint answered with, or null if there was no response. */
+            status_code: number | null;
+            /** @description Why the attempt failed. */
+            error: string | null;
+            duration_ms: number;
+            /** Format: date-time */
+            started_at: string;
+        };
+        /** @description A delivery as the log shows it, with what is needed to recognise it. */
+        DeliveryView: components["schemas"]["Delivery"] & {
+            event_type: components["schemas"]["EventType"];
+            /** @description The URL of the endpoint the delivery goes to. */
+            endpoint_url: string;
+            /** @description The latest attempt, or null while no attempt has finished. */
+            last_attempt: components["schemas"]["LastAttempt"] | null;
+        };
+        DeliveryDetail: components["schemas"]["DeliveryView"] & {
             attempts: components["schemas"]["Attempt"][];
         };
         DeliveryPage: {
-            data: components["schemas"]["Delivery"][];
+            data: components["schemas"]["DeliveryView"][];
             /** Format: uuid */
             next_cursor: string | null;
         };
